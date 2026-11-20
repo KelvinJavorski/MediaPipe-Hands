@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Raios nas Mãos</title>
+<style>
+html,body{margin:0;height:100%;background:#000;color:#fff;font:15px/1.4 -apple-system,system-ui,sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
+video{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+#ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;
+  padding:16px max(12px,env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
+  background:linear-gradient(transparent,rgba(0,0,0,.65))}
+button{font:inherit;color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.28);border-radius:999px;padding:10px 16px;min-height:44px;cursor:pointer}
+button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
+#intro{position:fixed;inset:0;display:grid;place-content:center;gap:18px;text-align:center;padding:24px;background:radial-gradient(circle at 50% 40%,#0c2236,#000 70%)}
+#intro h1{margin:0;font-size:32px;line-height:1.1}
+#intro p{margin:0;max-width:30em;color:#b9cbd8}
+#start{font-size:18px;padding:14px 28px;background:#8fe3ff;color:#001018;border:0;justify-self:center}
+#hud{position:fixed;top:calc(8px + env(safe-area-inset-top));left:12px;font:12px ui-monospace,monospace;color:#8fe3ff;opacity:.8}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<video id="v" playsinline muted autoplay></video>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+
+<div id="intro">
+  <h1>Raios nas Mãos</h1>
+  <p>Mostre as duas mãos para a câmera: as pontas dos dedos se ligam com raios. Com uma mão só, aproxime o polegar dos outros dedos. O indicador deixa um rastro de luz.</p>
+  <button id="start">Iniciar câmera</button>
+  <p id="msg"></p>
+</div>
+
+<div id="ui" hidden>
+  <button id="bSkel" class="on">Esqueleto</button>
+  <button id="bBolt" class="on">Raios</button>
+  <button id="bTrail" class="on">Rastro</button>
+  <button id="bCam">Trocar câmera</button>
+</div>
+
+<script type="module">
+import {FilesetResolver, HandLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const $ = s => document.querySelector(s);
+const video = $('#v'), cv = $('#c'), ctx = cv.getContext('2d');
+const msg = t => { $('#msg').textContent = t; };
+const opt = {skel: true, bolt: true, trail: true};
+const TIPS = [4, 8, 12, 16, 20];
+const HUES = [50, 190, 290, 140, 20];      // uma cor por dedo
+let landmarker, stream, devices = [], devIdx = -1, mirror = true;
+let W = 0, H = 0, dpr = 1, lastVT = -1, result = null;
+const particles = [];
+const trails = [[], []];
+
+if (!window.isSecureContext) msg('A câmera só funciona via https:// ou localhost. Veja as instruções de como abrir.');
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = cv.width = Math.round(innerWidth * dpr);
+  H = cv.height = Math.round(innerHeight * dpr);
+}
+addEventListener('resize', resize); resize();
+
+async function loadModel() {
+  const files = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+  const base = {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"};
+  const cfg = d => ({baseOptions: {...base, delegate: d}, runningMode: "VIDEO", numHands: 2,
+    minHandDetectionConfidence: .5, minHandPresenceConfidence: .5, minTrackingConfidence: .5});
+  try { return await HandLandmarker.createFromOptions(files, cfg("GPU")); }
+  catch (e) { console.warn('GPU falhou, usando CPU', e); return await HandLandmarker.createFromOptions(files, cfg("CPU")); }
+}
+
+async function openCamera(deviceId) {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  const video_c = deviceId ? {deviceId: {exact: deviceId}} : {facingMode: 'user'};
+  stream = await navigator.mediaDevices.getUserMedia({audio: false, video: {...video_c, width: {ideal: 1280}, height: {ideal: 720}}});
+  video.srcObject = stream;
+  await video.play();
+  const s = stream.getVideoTracks()[0].getSettings();
+  // espelha câmera frontal/webcam; não espelha a traseira
+  mirror = s.facingMode ? s.facingMode === 'user' : true;
+  devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+  devIdx = Math.max(0, devices.findIndex(d => d.deviceId === s.deviceId));
+  lastVT = -1;
+}
+
+$('#start').onclick = async () => {
+  try {
+    $('#start').disabled = true;
+    msg('Carregando modelo de mãos…');
+    landmarker = landmarker || await loadModel();
+    msg('Abrindo câmera…');
+    await openCamera();
+    $('#intro').hidden = true; $('#ui').hidden = false;
+    requestAnimationFrame(loop);
+  } catch (e) {
+    console.error(e);
+    msg('Erro: ' + (e.name === 'NotAllowedError' ? 'permissão da câmera negada.' : e.message));
+    $('#start').disabled = false;
+  }
+};
+
+const toggle = (id, key) => $(id).onclick = () => { opt[key] = !opt[key]; $(id).classList.toggle('on', opt[key]); };
+toggle('#bSkel', 'skel'); toggle('#bBolt', 'bolt'); toggle('#bTrail', 'trail');
+$('#bCam').onclick = async () => {
+  if (devices.length < 2) return;
+  devIdx = (devIdx + 1) % devices.length;
+  try { await openCamera(devices[devIdx].deviceId); } catch (e) { console.error(e); }
+};
+
+// mapeamento "cover" do vídeo para a tela
+function frameBox() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const sc = Math.max(W / vw, H / vh), dw = vw * sc, dh = vh * sc;
+  return {ox: (W - dw) / 2, oy: (H - dh) / 2, dw, dh};
+}
+function toScreen(lm, b) {
+  const x = b.ox + lm.x * b.dw, y = b.oy + lm.y * b.dh;
+  return {x: mirror ? W - x : x, y};
+}
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+function boltPath(a, b) {
+  let pts = [a, b], d = dist(a, b) * .22;
+  for (let k = 0; k < 6; k++) {
+    const np = [pts[0]];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p = pts[i], q = pts[i + 1];
+      np.push({x: (p.x + q.x) / 2 + (Math.random() - .5) * d, y: (p.y + q.y) / 2 + (Math.random() - .5) * d}, q);
+    }
+    pts = np; d /= 2;
+  }
+  return pts;
+}
+function strokePts(pts, color, w) {
+  ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+  ctx.stroke();
+}
+function bolt(a, b, hue, intensity = 1) {
+  const pts = boltPath(a, b), w = 2.2 * dpr * intensity;
+  strokePts(pts, `hsla(${hue},100%,60%,.12)`, w * 9);
+  strokePts(pts, `hsla(${hue},100%,65%,.35)`, w * 3.5);
+  strokePts(pts, `hsla(${hue},100%,93%,1)`, w);
+  if (Math.random() < .35) { // ramificação
+    const s = pts[(Math.random() * pts.length) | 0];
+    const len = dist(a, b) * .25;
+    const br = boltPath(s, {x: s.x + (Math.random() - .5) * len, y: s.y + (Math.random() - .5) * len});
+    strokePts(br, `hsla(${hue},100%,80%,.6)`, w * .7);
+  }
+  for (let i = 0; i < 2; i++) spawn(pts[(Math.random() * pts.length) | 0], hue, 1);
+}
+function spawn(p, hue, n, power = 1) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = (1 + Math.random() * 4) * dpr * power;
+    particles.push({x: p.x, y: p.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1, hue});
+  }
+  if (particles.length > 600) particles.splice(0, particles.length - 600);
+}
+function glowDot(p, r, color) {
+  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+}
+
+let fpsT = performance.now(), fpsN = 0;
+function loop(now) {
+  requestAnimationFrame(loop);
+  if (video.readyState < 2) return;
+  if (video.currentTime !== lastVT) {
+    lastVT = video.currentTime;
+    result = landmarker.detectForVideo(video, now);
+  }
+  const b = frameBox();
+
+  // fundo: vídeo escurecido
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.save();
+  if (mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(video, b.ox, b.oy, b.dw, b.dh);
+  ctx.restore();
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, 0, W, H);
+
+  const hands = (result?.landmarks || []).map(h => h.map(l => toScreen(l, b)));
+
+  if (opt.skel) {
+    ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#3dff7a';
+    for (const h of hands) {
+      ctx.beginPath();
+      for (const c of HandLandmarker.HAND_CONNECTIONS) { ctx.moveTo(h[c.start].x, h[c.start].y); ctx.lineTo(h[c.end].x, h[c.end].y); }
+      ctx.stroke();
+      for (const p of h) glowDot(p, 3.5 * dpr, '#ff3048');
+    }
+  }
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = ctx.lineJoin = 'round';
+
+  // rastro do indicador
+  for (let i = 0; i < 2; i++) {
+    const t = trails[i];
+    if (hands[i]) t.push({...hands[i][8], t: now});
+    while (t.length && now - t[0].t > 700) t.shift();
+    if (opt.trail && t.length > 1) {
+      for (let j = 1; j < t.length; j++) {
+        const k = j / t.length;
+        ctx.strokeStyle = `hsla(${190 + 100 * i},100%,${60 + 30 * k}%,${k})`;
+        ctx.lineWidth = (2 + 10 * k) * dpr;
+        ctx.beginPath(); ctx.moveTo(t[j - 1].x, t[j - 1].y); ctx.lineTo(t[j].x, t[j].y); ctx.stroke();
+      }
+    }
+    if (!hands[i] && t.length) t.shift();
+  }
+
+  if (opt.bolt) {
+    if (hands.length >= 2) {
+      // duas mãos: dedo com dedo
+      const [h1, h2] = hands;
+      TIPS.forEach((tip, i) => bolt(h1[tip], h2[tip], HUES[i]));
+    }
+    for (const h of hands) {
+      // uma mão: polegar com dedos próximos
+      const size = dist(h[0], h[9]);
+      for (let i = 1; i < TIPS.length; i++) {
+        const d = dist(h[4], h[TIPS[i]]);
+        if (d < size * 1.1) bolt(h[4], h[TIPS[i]], HUES[i], .7);
+        if (d < size * .18) spawn(h[TIPS[i]], HUES[i], 6, 1.6); // pinça = faíscas
+      }
+      for (const tip of TIPS) glowDot(h[tip], 7 * dpr, 'rgba(180,240,255,.35)');
+    }
+  }
+
+  // partículas
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += .12 * dpr; p.vx *= .97; p.life -= .03;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    glowDot(p, (1 + 2 * p.life) * dpr, `hsla(${p.hue},100%,${70 + 25 * p.life}%,${p.life})`);
+  }
+
+  fpsN++;
+  if (now - fpsT > 1000) { $('#hud').textContent = `${fpsN} fps · ${hands.length} mão(s)`; fpsN = 0; fpsT = now; }
+}
+</script>
+</body>
+</html>
