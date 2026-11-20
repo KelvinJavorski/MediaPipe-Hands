@@ -1,4 +1,4 @@
-// Som das cordas: AudioContext, cadeia de efeitos e os três timbres.
+// Som das cordas: AudioContext, cadeia de efeitos e os timbres.
 //
 // Cadeia: vozes das cordas -> master -> duck (sidechain da batida) -> compressor
 //         master -> delay no tempo (colcheia pontuada) e reverb -> duck
@@ -7,11 +7,10 @@ import {opt} from './state.js';
 
 export let BPM = 112, BEAT = 60 / BPM;      // mudam com o estilo da batida (setTempo)
 export let ac, master, duck, drums, noiseBuf, distCurve;
-export const DRUMS_GAIN = .25;              // volume base da batida (cada estilo multiplica por style.vol)
+export const DRUMS_GAIN = .42;              // volume base da batida (cada estilo multiplica por style.vol)
 let delayNode, comp;
 const voices = [];          // vozes tocando: {s, end, set(f), kill(t)}
 const MAX_VOICES = 10;
-const bufCache = new Map();
 
 // precisa ser chamado dentro de um gesto do usuário (exigência do iOS)
 export function initAudio() {
@@ -23,7 +22,7 @@ export function initAudio() {
   master = ac.createGain(); master.gain.value = 1; master.connect(duck);
   // delay com realimentação filtrada, sincronizado com a batida
   const dl = ac.createDelay(2), fb = ac.createGain(), lp = ac.createBiquadFilter(), wet = ac.createGain();
-  dl.delayTime.value = BEAT * .75; fb.gain.value = .38; lp.type = 'lowpass'; lp.frequency.value = 2400; wet.gain.value = .3;
+  dl.delayTime.value = BEAT * .75; fb.gain.value = .28; lp.type = 'lowpass'; lp.frequency.value = 1800; wet.gain.value = .18;   // eco discreto: com mais, as notas embolavam
   master.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); lp.connect(wet); wet.connect(duck);
   delayNode = dl;
   // curva de saturação (tanh) para os timbres dark e o baixo distorcido
@@ -52,26 +51,92 @@ export function shaper(oversample = '2x') {
   const sh = ac.createWaveShaper(); sh.curve = distCurve; sh.oversample = oversample; return sh;
 }
 
+// ---------- timbres ----------
+// Regra geral: a nota começa CERTA (antes ela começava mais alta e escorregava, o que soava desafinado);
+// a força do toque (vel) muda volume, brilho e duração. Filtros com pouca ressonância (som "redondo").
+const osc = (type, f, t, detune = 0) => { const o = ac.createOscillator(); o.type = type; o.frequency.setValueAtTime(f, t); o.detune.value = detune; return o; };
+
+// pluck: dedilhado eletrônico macio (3 serras levemente desafinadas + filtro que fecha rápido)
+function pluckSynthVoice(f, vel, t, out) {
+  const oscs = [osc('sawtooth', f, t, -8), osc('sawtooth', f, t, 8), osc('triangle', f / 2, t)];
+  const mix = ac.createGain(), sub = ac.createGain(), flt = ac.createBiquadFilter(), amp = ac.createGain();
+  mix.gain.value = .5; sub.gain.value = .6;
+  oscs[0].connect(mix); oscs[1].connect(mix); oscs[2].connect(sub); sub.connect(mix);
+  flt.type = 'lowpass'; flt.Q.value = 1.2;
+  flt.frequency.setValueAtTime(Math.min(12000, f * (6 + 10 * vel)), t);
+  flt.frequency.setTargetAtTime(f * 1.5 + 300, t + .005, .09 + .1 * vel);
+  mix.connect(flt); flt.connect(amp); amp.connect(out);
+  const dur = 1.6 + vel;
+  amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(.29 + .29 * vel, t + .004);
+  amp.gain.setTargetAtTime(0, t + .01, .28 + .3 * vel);
+  oscs.forEach(o => { o.start(t); stopAt(o, t + dur); });
+  return {end: t + dur,
+    set(nf) { const n = ac.currentTime; oscs[0].frequency.setTargetAtTime(nf, n, .03); oscs[1].frequency.setTargetAtTime(nf, n, .03); oscs[2].frequency.setTargetAtTime(nf / 2, n, .03); },
+    kill(n) { oscs.forEach(o => stopAt(o, n + .1)); }};
+}
+
+// teclado: piano elétrico por FM (modulador na mesma frequência = som quente; um "tine" agudo no ataque)
+function keysVoice(f, vel, t, out) {
+  const car = osc('sine', f, t), mod = osc('sine', f, t), idx = ac.createGain();
+  const tine = osc('sine', f * 4, t), tg = ac.createGain(), amp = ac.createGain();
+  idx.gain.setValueAtTime(f * (.8 + 1.6 * vel), t); idx.gain.setTargetAtTime(f * .15, t + .005, .35);
+  mod.connect(idx); idx.connect(car.frequency);
+  tg.gain.setValueAtTime(.08 + .12 * vel, t); tg.gain.setTargetAtTime(0, t + .003, .05);
+  car.connect(amp); tine.connect(tg); tg.connect(amp); amp.connect(out);
+  const dur = 2.6 + vel;
+  amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(.17 + .14 * vel, t + .006);
+  amp.gain.setTargetAtTime(0, t + .02, .7 + .5 * vel);
+  [car, mod, tine].forEach(o => { o.start(t); stopAt(o, t + dur); });
+  return {end: t + dur,
+    set(nf) { const n = ac.currentTime; car.frequency.setTargetAtTime(nf, n, .03); mod.frequency.setTargetAtTime(nf, n, .03); tine.frequency.setTargetAtTime(nf * 4, n, .03); },
+    kill(n) { [car, mod, tine].forEach(o => stopAt(o, n + .1)); }};
+}
+
+// marimba: fundamental + parciais de barra de madeira (4× e 10×) que somem rápido
+function marimbaVoice(f, vel, t, out) {
+  const parts = [[1, .5, .45 + .2 * vel], [4, .18 + .12 * vel, .07], [10, .05 + .06 * vel, .02]];
+  const amp = ac.createGain(), oscs = [];
+  for (const [r, g, tau] of parts) {
+    const o = osc('sine', f * r, t), pg = ac.createGain();
+    pg.gain.setValueAtTime(0, t); pg.gain.linearRampToValueAtTime(g, t + .002); pg.gain.setTargetAtTime(0, t + .004, tau);
+    o.connect(pg); pg.connect(amp); oscs.push([o, r]);
+  }
+  amp.gain.value = .32 + .2 * vel; amp.connect(out);
+  const dur = 2;
+  oscs.forEach(([o]) => { o.start(t); stopAt(o, t + dur); });
+  return {end: t + dur,
+    set(nf) { const n = ac.currentTime; oscs.forEach(([o, r]) => o.frequency.setTargetAtTime(nf * r, n, .03)); },
+    kill(n) { oscs.forEach(([o]) => stopAt(o, n + .1)); }};
+}
+
+// sino: síntese FM (modulador em razão não inteira dá o brilho metálico); força = mais harmônicos
+function bellVoice(f, vel, t, out) {
+  const ratio = 3.5, car = osc('sine', f, t), mod = osc('sine', f * ratio, t), idx = ac.createGain(), amp = ac.createGain();
+  idx.gain.setValueAtTime(f * (1.2 + 3.5 * vel), t); idx.gain.setTargetAtTime(f * .25, t + .005, .25);
+  amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(.12 + .14 * vel, t + .004);
+  amp.gain.setTargetAtTime(0, t + .01, .6 + .4 * vel);
+  mod.connect(idx); idx.connect(car.frequency); car.connect(amp); amp.connect(out);
+  const dur = 3 + vel;
+  car.start(t); mod.start(t); stopAt(car, t + dur); stopAt(mod, t + dur);
+  return {end: t + dur,
+    set(nf) { const n = ac.currentTime; car.frequency.setTargetAtTime(nf, n, .03); mod.frequency.setTargetAtTime(nf * ratio, n, .03); },
+    kill(n) { stopAt(car, n + .1); stopAt(mod, n + .1); }};
+}
+
 // reese: 2 serras bem desafinadas + sub, saturação, lowpass "respirando" com LFO (dark, estilo Rezz).
-// Força = LFO mais rápido e mais fundo, mais volume e pitch bend.
+// Força = LFO mais rápido e mais fundo, mais volume.
 function reeseVoice(f, vel, t, out) {
-  const ratios = [1, 1, .5], oscs = ratios.map(() => ac.createOscillator());
-  oscs[0].type = oscs[1].type = 'sawtooth'; oscs[2].type = 'sine';
-  oscs[0].detune.value = -18; oscs[1].detune.value = 18;
+  const ratios = [1, 1, .5], oscs = [osc('sawtooth', f, t, -18), osc('sawtooth', f, t, 18), osc('sine', f / 2, t)];
   const pre = ac.createGain(), sub = ac.createGain(), sh = shaper(), flt = ac.createBiquadFilter(), amp = ac.createGain();
   pre.gain.value = .55; sub.gain.value = .9;
   oscs[0].connect(pre); oscs[1].connect(pre); oscs[2].connect(sub); sub.connect(pre);
-  flt.type = 'lowpass'; flt.Q.value = 5; flt.frequency.value = f * 2.5 + 250;
+  flt.type = 'lowpass'; flt.Q.value = 3; flt.frequency.value = f * 2.5 + 250;
   const lfo = ac.createOscillator(), depth = ac.createGain();
-  lfo.frequency.value = 1.5 + 5 * vel; depth.gain.value = (f * 2.5 + 400) * (.5 + .5 * vel);
+  lfo.frequency.value = 1.5 + 4 * vel; depth.gain.value = (f * 2.5 + 400) * (.5 + .5 * vel);
   lfo.connect(depth); depth.connect(flt.frequency);
   pre.connect(sh); sh.connect(flt); flt.connect(amp); amp.connect(out);
-  const bend = 2 ** (2 * vel / 12), dur = 2.6 + vel;
-  oscs.forEach((o, i) => {
-    o.frequency.setValueAtTime(f * ratios[i] * bend, t);
-    o.frequency.setTargetAtTime(f * ratios[i], t + .01, .1);
-    o.start(t); stopAt(o, t + dur);
-  });
+  const dur = 2.6 + vel;
+  oscs.forEach(o => { o.start(t); stopAt(o, t + dur); });
   lfo.start(t); stopAt(lfo, t + dur);
   amp.gain.setValueAtTime(0, t);
   amp.gain.linearRampToValueAtTime(.13 + .15 * vel, t + .015);
@@ -81,18 +146,16 @@ function reeseVoice(f, vel, t, out) {
     kill(n) { oscs.forEach(o => stopAt(o, n + .1)); stopAt(lfo, n + .1); }};
 }
 
-// ácido: serra com filtro muito ressonante que varre de cima para baixo + saturação (303, psicodélico)
+// ácido: serra com filtro ressonante que varre de cima para baixo + saturação (303, psicodélico)
 function acidVoice(f, vel, t, out) {
-  const o = ac.createOscillator(), flt = ac.createBiquadFilter(), sh = shaper(), amp = ac.createGain();
-  o.type = 'sawtooth';
-  flt.type = 'lowpass'; flt.Q.value = 14 + 8 * vel;
+  const o = osc('sawtooth', f, t), flt = ac.createBiquadFilter(), sh = shaper(), amp = ac.createGain();
+  flt.type = 'lowpass'; flt.Q.value = 9 + 5 * vel;
   o.connect(flt); flt.connect(sh); sh.connect(amp); amp.connect(out);
-  const bend = 2 ** (3 * vel / 12), dur = 1.6;
-  o.frequency.setValueAtTime(f * bend, t); o.frequency.setTargetAtTime(f, t + .01, .05);
-  flt.frequency.setValueAtTime(Math.min(12000, f * (5 + 25 * vel)), t);
+  const dur = 1.6;
+  flt.frequency.setValueAtTime(Math.min(10000, f * (4 + 18 * vel)), t);
   flt.frequency.setTargetAtTime(f * 1.3 + 100, t + .005, .1 + .15 * vel);
   amp.gain.setValueAtTime(0, t);
-  amp.gain.linearRampToValueAtTime(.17 + .2 * vel, t + .004);
+  amp.gain.linearRampToValueAtTime(.135 + .16 * vel, t + .004);
   amp.gain.setTargetAtTime(0, t + .03, .22 + .2 * vel);
   o.start(t); stopAt(o, t + dur);
   return {end: t + dur,
@@ -100,75 +163,7 @@ function acidVoice(f, vel, t, out) {
     kill(n) { stopAt(o, n + .1); }};
 }
 
-// synth: 2 serras desafinadas + sub quadrada, filtro ressonante com envelope.
-// Batida forte = tom começa mais alto e "volta" (corda esticada), filtro mais aberto, mais volume.
-function synthVoice(f, vel, t, out) {
-  const ratios = [1, 1, .5], oscs = ratios.map(() => ac.createOscillator());
-  oscs[0].type = oscs[1].type = 'sawtooth'; oscs[2].type = 'square';
-  oscs[0].detune.value = -9; oscs[1].detune.value = 9;
-  const flt = ac.createBiquadFilter(), amp = ac.createGain(), sub = ac.createGain();
-  flt.type = 'lowpass'; flt.Q.value = 6 + 6 * vel; sub.gain.value = .35;
-  oscs[0].connect(flt); oscs[1].connect(flt); oscs[2].connect(sub); sub.connect(flt);
-  flt.connect(amp); amp.connect(out);
-  const bend = 2 ** (2 * vel / 12), dur = 1.8 + vel;
-  oscs.forEach((o, i) => {
-    o.frequency.setValueAtTime(f * ratios[i] * bend, t);
-    o.frequency.setTargetAtTime(f * ratios[i], t + .01, .08);
-    o.start(t); stopAt(o, t + dur);
-  });
-  flt.frequency.setValueAtTime(Math.min(16000, f * (3 + 14 * vel)), t);
-  flt.frequency.setTargetAtTime(f * 1.2 + 150, t + .01, .18 + .25 * vel);
-  amp.gain.setValueAtTime(0, t);
-  amp.gain.linearRampToValueAtTime(.12 + .22 * vel, t + .006);
-  amp.gain.setTargetAtTime(0, t + .02, .25 + .35 * vel);
-  return {end: t + dur,
-    set(nf) { const n = ac.currentTime; oscs.forEach((o, i) => o.frequency.setTargetAtTime(nf * ratios[i], n, .03)); },
-    kill(n) { oscs.forEach(o => stopAt(o, n + .1)); }};
-}
-
-// sino: síntese FM (modulador em razão não inteira dá o brilho metálico); força = mais harmônicos
-function bellVoice(f, vel, t, out) {
-  const car = ac.createOscillator(), mod = ac.createOscillator(), idx = ac.createGain(), amp = ac.createGain();
-  const ratio = 3.5, bend = 2 ** (vel / 12), dur = 3 + vel;
-  car.frequency.setValueAtTime(f * bend, t); car.frequency.setTargetAtTime(f, t + .01, .06);
-  mod.frequency.setValueAtTime(f * ratio * bend, t); mod.frequency.setTargetAtTime(f * ratio, t + .01, .06);
-  idx.gain.setValueAtTime(f * (1.5 + 5 * vel), t); idx.gain.setTargetAtTime(f * .3, t + .005, .25);
-  amp.gain.setValueAtTime(0, t); amp.gain.linearRampToValueAtTime(.2 + .25 * vel, t + .004);
-  amp.gain.setTargetAtTime(0, t + .01, .6 + .4 * vel);
-  mod.connect(idx); idx.connect(car.frequency); car.connect(amp); amp.connect(out);
-  car.start(t); mod.start(t); stopAt(car, t + dur); stopAt(mod, t + dur);
-  return {end: t + dur,
-    set(nf) { const n = ac.currentTime; car.frequency.setTargetAtTime(nf, n, .03); mod.frequency.setTargetAtTime(nf * ratio, n, .03); },
-    kill(n) { stopAt(car, n + .1); stopAt(mod, n + .1); }};
-}
-
-// harpa: Karplus-Strong (buffer cacheado), com glide via playbackRate
-function pluckBuffer(f) {
-  const key = Math.round(f * 10);
-  if (bufCache.has(key)) return bufCache.get(key);
-  const sr = ac.sampleRate, N = Math.max(2, Math.round(sr / f)), len = Math.round(sr * 2.5);
-  const buf = ac.createBuffer(1, len, sr), d = buf.getChannelData(0), ring = new Float32Array(N);
-  for (let i = 0; i < N; i++) ring[i] = Math.random() * 2 - 1;
-  for (let i = 0, p = 0; i < len; i++) {
-    const n = (p + 1) % N, v = ring[p];
-    d[i] = v; ring[p] = .996 * .5 * (v + ring[n]); p = n;
-  }
-  bufCache.set(key, buf); return buf;
-}
-function pluckVoice(f, vel, t, out) {
-  const src = ac.createBufferSource(), g = ac.createGain();
-  src.buffer = pluckBuffer(f); g.gain.value = .35 + .65 * vel;
-  src.connect(g); g.connect(out);
-  src.playbackRate.setValueAtTime(2 ** (vel / 12), t);
-  src.playbackRate.setTargetAtTime(1, t + .01, .06);
-  src.start(t);
-  return {end: t + 2.5,
-    set(nf) { src.playbackRate.setTargetAtTime(nf / f, ac.currentTime, .03); },
-    kill(n) { stopAt(src, n + .1); }};
-}
-
-// mesma ordem de TIMBRES em state.js
-const VOICES = [synthVoice, reeseVoice, acidVoice, bellVoice, pluckVoice];
+const VOICES = [pluckSynthVoice, keysVoice, marimbaVoice, bellVoice, reeseVoice, acidVoice];
 
 // frequência atual da corda: nota do comprimento × bend (pinça puxando o meio da corda)
 export const curFreq = s => s.f * (s.bendMul || 1);

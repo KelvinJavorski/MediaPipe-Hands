@@ -84,12 +84,14 @@ function noise(t, dur, type, freq, gain, q = 1) {
   s.connect(f); f.connect(g); g.connect(drums); s.start(t); s.stop(t + dur + .02);
 }
 function kick(t, heavy) {
-  const o = ac.createOscillator(), g = ac.createGain();
-  o.frequency.setValueAtTime(heavy ? 120 : 150, t); o.frequency.exponentialRampToValueAtTime(heavy ? 36 : 42, t + .12);
-  g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(.001, t + (heavy ? .6 : .4));
-  o.connect(g);
-  if (heavy) { const sh = shaper('none'); g.connect(sh); sh.connect(drums); } else g.connect(drums);  // grave: sem aliasing audível
+  // Corpo grave + saturação (gera harmônicos acima de 200 Hz) + um "clique" de ataque: alto-falante de
+  // celular quase não reproduz abaixo de ~150 Hz, e sem isso o bumbo simplesmente sumia no iPhone.
+  const o = ac.createOscillator(), g = ac.createGain(), sh = shaper('none');
+  o.frequency.setValueAtTime(heavy ? 130 : 170, t); o.frequency.exponentialRampToValueAtTime(heavy ? 38 : 45, t + .12);
+  g.gain.setValueAtTime(heavy ? 1.2 : .9, t); g.gain.exponentialRampToValueAtTime(.001, t + (heavy ? .6 : .4));
+  o.connect(g); g.connect(sh); sh.connect(drums);
   o.start(t); o.stop(t + .65);
+  noise(t, .015, 'highpass', 2500, heavy ? .45 : .35);
   // sidechain: as cordas "respiram" com o bumbo
   duck.gain.setValueAtTime(1, t); duck.gain.linearRampToValueAtTime(style.duck, t + .01); duck.gain.setTargetAtTime(1, t + .03, .09);
   kickTimes.push(t);
@@ -108,7 +110,7 @@ function bass(t, midi) {
   } else {
     const o = ac.createOscillator();
     o.type = 'sawtooth'; o.frequency.value = f;
-    lp.type = 'lowpass'; lp.Q.value = 8; lp.frequency.setValueAtTime(900, t); lp.frequency.setTargetAtTime(150, t, .06);
+    lp.type = 'lowpass'; lp.Q.value = 4; lp.frequency.setValueAtTime(1400, t); lp.frequency.setTargetAtTime(450, t, .06);   // harmônicos audíveis no celular
     g.gain.setValueAtTime(.32, t); g.gain.setTargetAtTime(0, t + BEAT * .35, .04);
     o.connect(lp); lp.connect(g); g.connect(drums); o.start(t); o.stop(t + BEAT);
   }
