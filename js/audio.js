@@ -7,6 +7,7 @@ import {opt} from './state.js';
 
 export let BPM = 112, BEAT = 60 / BPM;      // mudam com o estilo da batida (setTempo)
 export let ac, master, duck, drums, noiseBuf, distCurve;
+export const DRUMS_GAIN = .25;              // volume base da batida (cada estilo multiplica por style.vol)
 let delayNode;
 const voices = [];          // vozes tocando: {s, end, set(f), kill(t)}
 const MAX_VOICES = 10;
@@ -17,8 +18,9 @@ export function initAudio() {
   ac = new (window.AudioContext || window.webkitAudioContext)();
   const comp = ac.createDynamicsCompressor(); comp.connect(ac.destination);
   duck = ac.createGain(); duck.connect(comp);
-  drums = ac.createGain(); drums.gain.value = .55; drums.connect(comp);
-  master = ac.createGain(); master.gain.value = .8; master.connect(duck);
+  // mistura: as cordas são o instrumento principal e devem ficar acima da batida (medido: corda/batida ≥ ~1,2)
+  drums = ac.createGain(); drums.gain.value = DRUMS_GAIN; drums.connect(comp);
+  master = ac.createGain(); master.gain.value = 1; master.connect(duck);
   // delay com realimentação filtrada, sincronizado com a batida
   const dl = ac.createDelay(2), fb = ac.createGain(), lp = ac.createBiquadFilter(), wet = ac.createGain();
   dl.delayTime.value = BEAT * .75; fb.gain.value = .38; lp.type = 'lowpass'; lp.frequency.value = 2400; wet.gain.value = .3;
@@ -155,7 +157,7 @@ function pluckBuffer(f) {
 }
 function pluckVoice(f, vel, t, out) {
   const src = ac.createBufferSource(), g = ac.createGain();
-  src.buffer = pluckBuffer(f); g.gain.value = .25 + .5 * vel;
+  src.buffer = pluckBuffer(f); g.gain.value = .35 + .65 * vel;
   src.connect(g); g.connect(out);
   src.playbackRate.setValueAtTime(2 ** (vel / 12), t);
   src.playbackRate.setTargetAtTime(1, t + .01, .06);

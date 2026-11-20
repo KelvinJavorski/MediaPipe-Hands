@@ -77,7 +77,8 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 | Pitch bend pela força | `synthVoice` / `pluckVoice` | até +2 / +1 semitom, volta em ~80 ms |
 | Delay | `initAudio` | `BEAT * .75` (colcheia pontuada), feedback .38, wet .3 |
 | Reverb | `initAudio` | IR de 1,6 s, wet .3 |
-| Tempo / sidechain | `STYLES` em `beat.js` | House 112 / Rezz 100 / Techno 126 BPM; cordas caem para 50% / 35% / 45% no bumbo |
+| Tempo / sidechain | `STYLES` em `beat.js` | House 112 / Rezz 100 / Techno 126 BPM; cordas caem para 75% / 65% / 70% no bumbo |
+| Mistura | `DRUMS_GAIN`, `style.vol`, `master` | batida .25 (Rezz × .65), cordas 1,0. Medido: corda ≈ 1,4–1,8× a batida (Harpa ≈ 1×) |
 | Faixa de notas | `noteFor` | Dó2 (MIDI 36) a Dó5, pentatônica maior ou menor (definida pelo estilo da batida) |
 | Decaimento visual da vibração | `drawString` | `exp(-age * 2.2)` |
 | Escurecimento do vídeo | `#shade` (CSS) | `rgba(0,0,0,.35)` |

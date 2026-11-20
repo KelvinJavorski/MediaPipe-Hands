@@ -2,22 +2,22 @@
 // O agendamento roda num setInterval próprio, ~120 ms à frente no relógio do áudio,
 // independente do requestAnimationFrame (não atrasa se o desenho travar).
 // Cada estilo define andamento, escala das cordas e padrões.
-import {ac, duck, drums, noiseBuf, BEAT, setTempo, shaper} from './audio.js';
+import {ac, duck, drums, noiseBuf, BEAT, setTempo, shaper, DRUMS_GAIN} from './audio.js';
 import {setScale} from './strings.js';
 import {opt} from './state.js';
 
 // padrões: 'x' = toca, 'o' = toca mais forte/aberto (chimbal aberto), '.' = pausa
 // bass: MIDI por passo (0 = pausa); bassType: 'pluck' curto e limpo | 'reese' distorcido e com LFO
 export const STYLES = [
-  {name: 'House', bpm: 112, scale: 'maior', bassType: 'pluck', duck: .5,
+  {name: 'House', bpm: 112, scale: 'maior', bassType: 'pluck', duck: .75,
     kick: 'x...x...x...x...', clap: '....x.......x...', hat: '..x...x...x...x.', tick: 'x.x.x.x.x.x.x.x.',
     bass: [36, 0, 0, 36, 0, 0, 43, 0, 36, 0, 0, 38, 0, 0, 31, 0]},
   // lento e hipnótico, meio-tempo, baixo distorcido em Dó menor (inspirado em Rezz)
-  {name: 'Rezz', bpm: 100, scale: 'menor', bassType: 'reese', duck: .35,
+  {name: 'Rezz', bpm: 100, scale: 'menor', bassType: 'reese', duck: .65, vol: .65,   // bumbo/baixo saturados pesam mais
     kick: 'x.........x.....', clap: '........x.......', hat: '....x.......x..x', tick: '..x...x...x...x.',
     bass: [36, 0, 0, 36, 0, 0, 39, 0, 0, 36, 0, 0, 34, 0, 41, 0]},
   // techno escuro: bumbo reto, chimbal aberto no contratempo, baixo rolando entre os bumbos
-  {name: 'Techno', bpm: 126, scale: 'menor', bassType: 'pluck', duck: .45,
+  {name: 'Techno', bpm: 126, scale: 'menor', bassType: 'pluck', duck: .7,
     kick: 'x...x...x...x...', clap: '....x.......x...', hat: '..o...o...o...o.', tick: 'xxxxxxxxxxxxxxxx',
     bass: [0, 36, 36, 0, 0, 36, 36, 0, 0, 36, 39, 0, 0, 36, 34, 0]},
 ];
@@ -51,7 +51,7 @@ function bass(t, midi) {
     o1.type = o2.type = 'sawtooth'; o1.frequency.value = o2.frequency.value = f; o1.detune.value = -20; o2.detune.value = 20;
     lp.type = 'lowpass'; lp.Q.value = 6;
     lp.frequency.setValueAtTime(180, t); lp.frequency.linearRampToValueAtTime(1100, t + len * .45); lp.frequency.linearRampToValueAtTime(160, t + len);
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(.22, t + .02); g.gain.setTargetAtTime(0, t + len * .8, .05);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(.13, t + .02); g.gain.setTargetAtTime(0, t + len * .8, .05);
     o1.connect(sh); o2.connect(sh); sh.connect(lp); lp.connect(g); g.connect(drums);
     o1.start(t); o2.start(t); o1.stop(t + len + .3); o2.stop(t + len + .3);
   } else {
@@ -81,6 +81,7 @@ export function setBeat(idx) {
   clearInterval(beatTimer); beatTimer = null;
   if (idx < 0 || !ac) return;
   style = STYLES[idx];
+  drums.gain.setTargetAtTime(DRUMS_GAIN * (style.vol ?? 1), ac.currentTime, .05);   // volume por estilo
   setTempo(style.bpm); setScale(style.scale);
   if (ac.state !== 'running') ac.resume();
   beatStep = 0; beatNext = ac.currentTime + .08;
