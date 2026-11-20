@@ -43,6 +43,35 @@ export function nearestEnd(p, r, hands) {
   return best;
 }
 
+// ponto do MEIO de alguma corda perto de p (para o bend): projeção de p na corda, longe das pontas.
+// Retorna {s, e: 'mid'} ou null. Cordas já seguradas no meio por outra mão são ignoradas.
+export function nearestMid(p, r, hands) {
+  let best = null;
+  for (const s of strings) {
+    if (hands.some(h => h.st.grab && h.st.grab.s === s && h.st.grab.e === 'mid')) continue;
+    const a = endPt(s, 'a'), b = endPt(s, 'b'), dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy || 1;
+    const u = ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2;
+    if (u < .15 || u > .85) continue;
+    const d = Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / Math.sqrt(L2);
+    if (d < r) { r = d; best = {s, e: 'mid'}; }
+  }
+  return best;
+}
+
+// Bend: a corda é puxada pelo meio até p. Guarda o ponto (u ao longo da corda, off = deslocamento
+// perpendicular em px, com sinal) e sobe a nota como uma corda real esticada: quanto mais longe, mais aguda.
+export const BEND_MAX_SEMIS = 7;
+export function bendTo(g, p) {
+  const s = g.s, a = endPt(s, 'a'), b = endPt(s, 'b'), dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+  const u = Math.max(.1, Math.min(.9, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (L * L)));
+  const off = ((p.x - a.x) * -dy + (p.y - a.y) * dx) / L;     // projeção na normal (-dy, dx)/L, igual à do desenho
+  s.bend = {u, off};
+  const semis = Math.min(BEND_MAX_SEMIS, 30 * Math.abs(off) / L);   // 10% do comprimento ≈ +3 semitons
+  const mul = 2 ** (semis / 12);
+  if (Math.abs(mul - (s.bendMul || 1)) > .002) { s.bendMul = mul; retune(s); }
+}
+export function releaseBend(s) { const b = s.bend; s.bend = null; s.bendMul = 1; retune(s); return b; }
+
 // move a ponta agarrada g = {s, e} para p e atualiza a nota (vozes soando deslizam junto)
 export function moveEnd(g, p) {
   const s = g.s;

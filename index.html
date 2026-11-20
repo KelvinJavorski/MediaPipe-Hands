@@ -21,6 +21,12 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
 #ui button.icon{width:38px;height:38px;padding:0;display:grid;place-items:center}
 #ui button.icon svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 #ui .sep{width:1px;height:24px;background:rgba(255,255,255,.25);margin:0 2px}
+#ui button.recOn{background:#ff3b5c;border-color:#ff3b5c;color:#fff}
+#ui button.icon.recOn svg circle{fill:#fff}
+#bRec svg circle{fill:#ff3b5c;stroke:none}
+/* loop tocando: o fundo do botão mostra o progresso da volta */
+#bLoop.playing{background:linear-gradient(90deg,rgba(143,227,255,.55) var(--p,0%),rgba(255,255,255,.12) var(--p,0%));border-color:#8fe3ff}
+#bSave{background:#3dff7a;color:#002410;border-color:#3dff7a}
 #intro{position:fixed;inset:0;display:grid;place-content:center;gap:16px;text-align:center;padding:24px;background:radial-gradient(circle at 50% 40%,#0c2236,#000 70%)}
 #intro h1{margin:0;font-size:34px;line-height:1.1}
 #intro ol{margin:0 auto;padding-left:1.2em;max-width:28em;text-align:left;color:#c3d4e0}
@@ -46,6 +52,8 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
     <li>Solte a pinça: a corda <b>fica presa</b> onde você deixou.</li>
     <li>Passe o indicador pela corda para tocar. Quanto mais rápido, mais forte. Corda longa = grave, curta = agudo.</li>
     <li>Faça pinça <b>em cima da ponta</b> de uma corda para agarrá-la e mudar o comprimento, enquanto a outra mão toca. Encolha até sumir para apagar.</li>
+    <li>Faça pinça <b>no meio</b> de uma corda e puxe: ela entorta e a nota sobe. Solte para ela estalar.</li>
+    <li><b>Loop</b> grava o que você toca e repete; toque de novo para fechar e depois em <b>+ Camada</b> para somar mais. <b>●</b> grava um vídeo.</li>
   </ol>
   <button id="start">Iniciar câmera e som</button>
   <p id="msg">No iPhone, desligue o modo silencioso para ouvir.</p>
@@ -53,6 +61,9 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
 
 <div id="ui" hidden>
   <button id="bBeat">Batida</button>
+  <button id="bLoop" title="Gravar um loop do que você toca">Loop</button>
+  <button id="bLoopClear" class="icon" title="Apagar loop" aria-label="Apagar loop" hidden>
+    <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
   <button id="bTimbre" class="on" title="Trocar timbre">Synth</button>
   <button id="bSkel" class="on">Esqueleto</button>
   <button id="bTrail" class="on">Rastro</button>
@@ -66,21 +77,26 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
     <svg viewBox="0 0 24 24"><path d="M3 8h4l2-3h6l2 3h4v12H3z"/><path d="M9 13.5a3 3 0 0 1 5.6-1.5M15 12.5a3 3 0 0 1-5.6 1.5"/><path d="M14.6 9.8v2.2h-2.2M9.4 16.2V14h2.2"/></svg></button>
   <button id="bMirror" class="icon on" title="Espelhar" aria-label="Espelhar imagem">
     <svg viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M8.5 7 3 17h5.5z"/><path d="M15.5 7 21 17h-5.5z"/></svg></button>
+  <button id="bRec" class="icon" title="Gravar vídeo" aria-label="Gravar vídeo">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></svg></button>
+  <button id="bSave" hidden>Salvar vídeo</button>
 </div>
 
 <!-- Versão: trocar ?v=N em TODAS as linhas abaixo a cada publicação. Ela força o Safari a
      baixar os módulos novos e é o número exibido na tela (lido em js/state.js). -->
 <script type="importmap">
 {"imports": {
-  "./js/main.js": "./js/main.js?v=13",
-  "./js/state.js": "./js/state.js?v=13",
-  "./js/view.js": "./js/view.js?v=13",
-  "./js/geom.js": "./js/geom.js?v=13",
-  "./js/audio.js": "./js/audio.js?v=13",
-  "./js/beat.js": "./js/beat.js?v=13",
-  "./js/strings.js": "./js/strings.js?v=13",
-  "./js/camera.js": "./js/camera.js?v=13",
-  "./js/draw.js": "./js/draw.js?v=13"
+  "./js/main.js": "./js/main.js?v=14",
+  "./js/state.js": "./js/state.js?v=14",
+  "./js/view.js": "./js/view.js?v=14",
+  "./js/geom.js": "./js/geom.js?v=14",
+  "./js/audio.js": "./js/audio.js?v=14",
+  "./js/beat.js": "./js/beat.js?v=14",
+  "./js/strings.js": "./js/strings.js?v=14",
+  "./js/camera.js": "./js/camera.js?v=14",
+  "./js/draw.js": "./js/draw.js?v=14",
+  "./js/looper.js": "./js/looper.js?v=14",
+  "./js/recorder.js": "./js/recorder.js?v=14"
 }}
 </script>
 <script type="module">import './js/main.js';</script>

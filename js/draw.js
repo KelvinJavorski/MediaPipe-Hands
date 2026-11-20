@@ -96,14 +96,17 @@ export function drawString(s, now, pulse) {
   const pts = [], N = Math.max(8, Math.min(28, Math.round(len / (14 * dpr))));
   const u = s.u, w = Math.min(1, age * 6);
   const osc = amp * s.dir * Math.cos(age * Math.min(14, s.f / 25) * Math.PI * 2);
+  const bd = s.bend;                                             // bend: corda puxada em V até a pinça
   for (let i = 0; i <= N; i++) {
     const t = i / N, tri = t < u ? t / u : (1 - t) / (1 - u);
-    const off = osc * (tri * (1 - w) + Math.sin(Math.PI * t) * w);
+    let off = osc * (tri * (1 - w) + Math.sin(Math.PI * t) * w);
+    if (bd) off += bd.off * (t < bd.u ? t / bd.u : (1 - t) / (1 - bd.u));
     pts.push({x: a.x + (b.x - a.x) * t + nx * off, y: a.y + (b.y - a.y) * t + ny * off});
   }
   // bright = só o toque (controla largura, raios extras e partículas, que custam caro);
-  // o pulso da batida só clareia as cores (custo zero), senão todas as cordas pesam a cada bumbo
-  const bright = Math.min(1, amp / (12 * dpr)), glow = Math.max(bright, pulse * .6);
+  // o pulso da batida e a tensão do bend só clareiam as cores (custo zero)
+  const tension = bd ? Math.min(1, Math.abs(bd.off) / (.15 * len)) : 0;
+  const bright = Math.min(1, amp / (12 * dpr)), glow = Math.max(bright, pulse * .6, tension * .8);
   const hue = s.hue;
   // halo suave + núcleo fino
   strokePts(pts, `hsla(${hue},100%,55%,${.14 + .16 * glow})`, (12 + 10 * bright) * dpr);

@@ -8,7 +8,7 @@ import {opt} from './state.js';
 export let BPM = 112, BEAT = 60 / BPM;      // mudam com o estilo da batida (setTempo)
 export let ac, master, duck, drums, noiseBuf, distCurve;
 export const DRUMS_GAIN = .25;              // volume base da batida (cada estilo multiplica por style.vol)
-let delayNode;
+let delayNode, comp;
 const voices = [];          // vozes tocando: {s, end, set(f), kill(t)}
 const MAX_VOICES = 10;
 const bufCache = new Map();
@@ -16,7 +16,7 @@ const bufCache = new Map();
 // precisa ser chamado dentro de um gesto do usuário (exigência do iOS)
 export function initAudio() {
   ac = new (window.AudioContext || window.webkitAudioContext)();
-  const comp = ac.createDynamicsCompressor(); comp.connect(ac.destination);
+  comp = ac.createDynamicsCompressor(); comp.connect(ac.destination);
   duck = ac.createGain(); duck.connect(comp);
   // mistura: as cordas são o instrumento principal e devem ficar acima da batida (medido: corda/batida ≥ ~1,2)
   drums = ac.createGain(); drums.gain.value = DRUMS_GAIN; drums.connect(comp);
@@ -170,19 +170,32 @@ function pluckVoice(f, vel, t, out) {
 // mesma ordem de TIMBRES em state.js
 const VOICES = [synthVoice, reeseVoice, acidVoice, bellVoice, pluckVoice];
 
-// toca a corda s: vel 0..1 (força do dedo), pan -1..1 (posição X)
-export function playString(s, vel, pan) {
+// frequência atual da corda: nota do comprimento × bend (pinça puxando o meio da corda)
+export const curFreq = s => s.f * (s.bendMul || 1);
+
+// toca a corda s: vel 0..1 (força do dedo), pan -1..1 (posição X).
+// when = horário no relógio do áudio (looper agenda à frente); freq = frequência fixa (nota gravada no loop).
+export function playString(s, vel, pan, when, freq) {
   if (!opt.sound || !ac) return;
   if (ac.state !== 'running') ac.resume();
-  const t = ac.currentTime, out = ac.createGain();
+  const now = ac.currentTime, t = Math.max(now, when ?? now), out = ac.createGain();
   let node = out;
   if (ac.createStereoPanner) { const p = ac.createStereoPanner(); p.pan.value = pan; out.connect(p); node = p; }
   node.connect(master);
-  const v = VOICES[opt.timbre](s.f, vel, t, out);
-  v.s = s; v.out = out; voices.push(v);
-  for (let i = voices.length - 1; i >= 0; i--) if (voices[i].end < t) voices.splice(i, 1);
-  while (voices.length > MAX_VOICES) { const o = voices.shift(); o.out.gain.setTargetAtTime(0, t, .015); o.kill(t); }
+  const v = VOICES[opt.timbre](freq ?? curFreq(s), vel, t, out);
+  v.s = freq ? null : s;      // nota do loop não acompanha mudanças da corda
+  v.out = out; voices.push(v);
+  for (let i = voices.length - 1; i >= 0; i--) if (voices[i].end < now) voices.splice(i, 1);
+  while (voices.length > MAX_VOICES) { const o = voices.shift(); o.out.gain.setTargetAtTime(0, now, .015); o.kill(now); }
 }
 
-// a corda mudou de nota (comprimento ajustado): as vozes que estão soando deslizam para a nova nota
-export function retune(s) { for (const v of voices) if (v.s === s) v.set(s.f); }
+// a corda mudou de nota (comprimento ou bend): as vozes que estão soando deslizam para a nova nota
+export function retune(s) { const f = curFreq(s); for (const v of voices) if (v.s === s) v.set(f); }
+
+// som final (depois do compressor) como MediaStream, para gravar vídeo com áudio
+let recDest = null;
+export function audioStream() {
+  if (!ac || !ac.createMediaStreamDestination) return null;
+  if (!recDest) { recDest = ac.createMediaStreamDestination(); comp.connect(recDest); }
+  return recDest.stream;
+}
