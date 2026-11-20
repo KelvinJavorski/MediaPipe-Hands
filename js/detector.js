@@ -2,7 +2,7 @@
 // Protocolo:
 //   worker -> {type: 'ready', delegate: 'GPU'|'CPU'} | {type: 'error', message}
 //   main   -> {bitmap: ImageBitmap (transferido), t: timestamp ms crescente}
-//   worker -> {type: 'result', landmarks, handedness, ms}
+//   worker -> {type: 'result', landmarks, worldLandmarks (metros), handedness, ms}
 import {FilesetResolver, HandLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 let landmarker, delegate;
@@ -35,9 +35,10 @@ onmessage = async ({data}) => {
   try {
     const t0 = performance.now();
     const r = landmarker.detectForVideo(bitmap, t);
-    postMessage({type: 'result', landmarks: r.landmarks, handedness: r.handedness, ms: performance.now() - t0});
+    postMessage({type: 'result', landmarks: r.landmarks, worldLandmarks: r.worldLandmarks, handedness: r.handedness,
+      ms: performance.now() - t0});
   } catch (e) {
-    postMessage({type: 'result', landmarks: [], handedness: [], ms: 0, error: String(e?.message || e)});
+    postMessage({type: 'result', landmarks: [], worldLandmarks: [], handedness: [], ms: 0, error: String(e?.message || e)});
   } finally {
     bitmap.close();
   }

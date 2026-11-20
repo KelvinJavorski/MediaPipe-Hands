@@ -79,6 +79,23 @@ $('#bCam').onclick = async () => {
 const grabR = st => Math.max(40 * dpr, st.size * .6);   // raio para agarrar a ponta de uma corda
 let fpsT = performance.now(), fpsN = 0, detN = 0;
 
+// Pinça: usa a distância REAL (em metros, worldLandmarks) entre as pontas do polegar e do indicador,
+// que não engana quando os dedos só se sobrepõem na imagem (mão de lado). Entrar exige 3D e 2D perto;
+// sair basta um dos dois longe (histerese). A mudança só vale após PINCH_FRAMES leituras seguidas,
+// para uma leitura errada isolada não agarrar (nem soltar) uma corda.
+const PINCH_IN_M = .03, PINCH_OUT_M = .05, PINCH_IN_2D = .35, PINCH_OUT_2D = .5, PINCH_FRAMES = 2;
+const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+function updatePinch(st, pts, size, world) {
+  const r2 = dist(pts[4], pts[8]) / (size || 1);              // 2D relativo ao tamanho da mão
+  const m = world ? dist3(world[4], world[8]) : null;         // 3D em metros (se disponível)
+  st.cm = m === null ? null : m * 100;
+  const raw = st.pinch
+    ? !(r2 > PINCH_OUT_2D || (m !== null && m > PINCH_OUT_M))
+    : r2 < PINCH_IN_2D && (m === null || m < PINCH_IN_M);
+  if (raw === st.pinch) { st.flip = 0; return; }
+  if (++st.flip >= PINCH_FRAMES) { st.pinch = raw; st.flip = 0; }
+}
+
 function loop(now) {
   requestAnimationFrame(loop);
   if (video.readyState < 2) return;
@@ -110,14 +127,14 @@ function loop(now) {
   const hands = (result?.landmarks || []).map((h, i) => {
     const pts = h.map(l => toScreen(l, b));
     const id = result.handedness?.[i]?.[0]?.categoryName || 'h' + i;
-    const st = hand[id] ||= {pinch: false, wasPinch: false, grab: null, prev: null, prevT: 0, trail: []};
-    const size = dist(pts[0], pts[9]), pd = dist(pts[4], pts[8]);
-    st.pinch = st.pinch ? pd < size * .45 : pd < size * .28;  // histerese evita "piscar"
+    const st = hand[id] ||= {pinch: false, wasPinch: false, grab: null, prev: null, prevT: 0, trail: [], flip: 0, cm: 0};
+    const size = dist(pts[0], pts[9]);
+    if (fresh) updatePinch(st, pts, size, result.worldLandmarks?.[i]);
     st.pinchPt = mid(pts[4], pts[8]); st.size = size;
     return {id, pts, st};
   });
   for (const id in hand) if (!hands.some(h => h.id === id)) {
-    const st = hand[id]; st.pinch = st.wasPinch = false; st.grab = null; st.prev = null; st.trail.length = 0;
+    const st = hand[id]; st.pinch = st.wasPinch = false; st.grab = null; st.prev = null; st.trail.length = 0; st.flip = 0;
   }
 
   ctx.globalCompositeOperation = 'lighter';
@@ -207,7 +224,9 @@ function loop(now) {
 
   fpsN++;
   if (now - fpsT > 1000) {
-    $('#hud').textContent = `${VERSION} · ${fpsN} fps · mãos ${detN}/s · detecção ${detMs.toFixed(0)} ms (${mode}) · ${strings.length} corda(s)`;
+    const cms = hands.map(h => h.st.cm === null ? '?' : h.st.cm.toFixed(1)).join('/');
+    $('#hud').textContent = `${VERSION} · ${fpsN} fps · mãos ${detN}/s · detecção ${detMs.toFixed(0)} ms (${mode})` +
+      (cms ? ` · pinça ${cms} cm` : '') + ` · ${strings.length} corda(s)`;
     fpsN = 0; detN = 0; fpsT = now;
   }
 }

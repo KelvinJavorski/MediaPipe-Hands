@@ -55,7 +55,7 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 
 - Coordenadas das cordas são guardadas **normalizadas** (`ax, ay, bx, by` em 0..1 da tela) para sobreviver a resize/rotação. Converter com `endPt(s, 'a'|'b')`.
 - Tudo que é tamanho em pixel é multiplicado por `dpr` (cap em 1.5, por desempenho).
-- Landmarks MediaPipe usados: `0` pulso, `4` ponta do polegar, `8` ponta do indicador, `9` base do dedo médio (`dist(0,9)` = escala da mão).
+- Landmarks MediaPipe usados: `0` pulso, `4` ponta do polegar, `8` ponta do indicador, `9` base do dedo médio (`dist(0,9)` = escala da mão). `worldLandmarks` (metros, centrados na mão) são usados para a distância real da pinça; o HUD mostra essa distância em cm por mão.
 - `HandLandmarker.HAND_CONNECTIONS` é array de `{start, end}`.
 - Mão em pinça **não** toca cordas. Uma mão pode segurar a ponta de uma corda enquanto a outra toca (inclusive a mesma corda).
 - Textos de UI em **português (pt-BR)**.
@@ -64,8 +64,9 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 
 | O quê | Onde | Valor atual |
 |---|---|---|
-| Entrar em pinça | `st.pinch` no loop | `dist(4,8) < size * .28` |
-| Sair da pinça (histerese) | idem | `dist(4,8) < size * .45` |
+| Entrar em pinça | `updatePinch` em `main.js` | 3D (`worldLandmarks`, metros) `< PINCH_IN_M` 3 cm **e** 2D `< size * .35` |
+| Sair da pinça (histerese) | idem | 3D `> PINCH_OUT_M` 5 cm **ou** 2D `> size * .5` |
+| Confirmação da pinça | `PINCH_FRAMES` | 2 leituras seguidas para entrar ou sair (uma leitura errada isolada é ignorada) |
 | Raio para agarrar ponta | `grabR` | `max(40 * dpr, size * .6)` |
 | Comprimento mínimo da corda | blocos "agarrar" e "esticar" | `50 * dpr` (abaixo disso, apaga/não cria) |
 | Máximo de cordas | idem | 30 (remove a mais antiga) |
