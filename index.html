@@ -53,6 +53,8 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
     <li>Passe o indicador pela corda para tocar. Quanto mais rápido, mais forte. Corda longa = grave, curta = agudo.</li>
     <li>Faça pinça <b>em cima da ponta</b> de uma corda para agarrá-la e mudar o comprimento, enquanto a outra mão toca. Encolha até sumir para apagar.</li>
     <li>Faça pinça <b>no meio</b> de uma corda e puxe: ela entorta e a nota sobe. Solte para ela estalar.</li>
+    <li><b>Tambores de luz:</b> com uma mão, faça pinça e <b>gire o pulso</b> como um botão; o círculo cresce com o giro (pequeno = chimbal, médio = caixa, maior = tom, grande = bumbo). Solte e bata a ponta dos dedos nele.</li>
+    <li><b>Rosto</b> (botão): abrir a boca faz "wah"; inclinar a cabeça sobe/desce todas as notas.</li>
     <li><b>Loop</b> grava o que você toca e repete; toque de novo para fechar e depois em <b>+ Camada</b> para somar mais. <b>●</b> grava um vídeo.</li>
   </ol>
   <button id="start">Iniciar câmera e som</button>
@@ -65,6 +67,7 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
   <button id="bLoopClear" class="icon" title="Apagar loop" aria-label="Apagar loop" hidden>
     <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
   <button id="bTimbre" class="on" title="Trocar timbre">Pluck</button>
+  <button id="bFace" title="Boca aberta = wah, cabeça inclinada = pitch bend">Rosto</button>
   <button id="bSkel" class="on">Esqueleto</button>
   <button id="bTrail" class="on">Rastro</button>
   <button id="bSound" class="on">Som</button>
@@ -86,17 +89,19 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
      baixar os módulos novos e é o número exibido na tela (lido em js/state.js). -->
 <script type="importmap">
 {"imports": {
-  "./js/main.js": "./js/main.js?v=16",
-  "./js/state.js": "./js/state.js?v=16",
-  "./js/view.js": "./js/view.js?v=16",
-  "./js/geom.js": "./js/geom.js?v=16",
-  "./js/audio.js": "./js/audio.js?v=16",
-  "./js/beat.js": "./js/beat.js?v=16",
-  "./js/strings.js": "./js/strings.js?v=16",
-  "./js/camera.js": "./js/camera.js?v=16",
-  "./js/draw.js": "./js/draw.js?v=16",
-  "./js/looper.js": "./js/looper.js?v=16",
-  "./js/recorder.js": "./js/recorder.js?v=16"
+  "./js/main.js": "./js/main.js?v=17",
+  "./js/state.js": "./js/state.js?v=17",
+  "./js/view.js": "./js/view.js?v=17",
+  "./js/geom.js": "./js/geom.js?v=17",
+  "./js/audio.js": "./js/audio.js?v=17",
+  "./js/beat.js": "./js/beat.js?v=17",
+  "./js/strings.js": "./js/strings.js?v=17",
+  "./js/camera.js": "./js/camera.js?v=17",
+  "./js/draw.js": "./js/draw.js?v=17",
+  "./js/looper.js": "./js/looper.js?v=17",
+  "./js/recorder.js": "./js/recorder.js?v=17",
+  "./js/drums.js": "./js/drums.js?v=17",
+  "./js/pads.js": "./js/pads.js?v=17"
 }}
 </script>
 <script type="module">import './js/main.js';</script>

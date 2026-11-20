@@ -7,9 +7,13 @@
 // Protocolo:
 //   worker -> {type: 'ready', delegate: 'GPU'|'CPU'} | {type: 'error', message}
 //   main   -> {bitmap: ImageBitmap (transferido), t: timestamp ms crescente}
-//   worker -> {type: 'result', landmarks, worldLandmarks (metros), handedness, ms, delegate, bench}
+//   worker -> {type: 'result', landmarks, worldLandmarks (metros), handedness, ms, delegate, bench, face}
+//   main   -> {type: 'face', on: true|false}  liga/desliga o modelo de ROSTO (carregado só quando ligado)
+//   main   -> {bitmap, t, face: true}         também detecta o rosto neste quadro (main manda em quadros alternados)
+//             face = null | {pts: [6 pontos {x, y}: 13 lábio de cima, 14 lábio de baixo, 10 testa, 152 queixo,
+//                    33 canto do olho direito, 263 canto do olho esquerdo], ms}
 //             bench = null (medindo) | {gpu: ms, cpu: ms} (mediana de cada, depois da escolha)
-import {FilesetResolver, HandLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+import {FilesetResolver, HandLandmarker, FaceLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
 const BENCH_N = 30, WARMUP = 5;     // as primeiras leituras de cada um incluem compilação/aquecimento
 let files, landmarkers = {}, delegate, phase, bench = null;
@@ -61,8 +65,24 @@ const ready = init().then(
   () => postMessage({type: 'ready', delegate}),
   e => postMessage({type: 'error', message: String(e?.message || e)}));
 
+// ---------- rosto (opcional) ----------
+const FACE_IDX = [13, 14, 10, 152, 33, 263];
+let faceLm = null, faceLoading = null, faceOn = false;
+function loadFace() {
+  if (faceLm || faceLoading) return faceLoading;
+  const fcfg = d => ({baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      delegate: d},
+    runningMode: "VIDEO", numFaces: 1, outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false});
+  faceLoading = FaceLandmarker.createFromOptions(files, fcfg(delegate))
+    .catch(() => FaceLandmarker.createFromOptions(files, fcfg('CPU')))
+    .then(lm => { faceLm = lm; }, e => { faceLoading = null; postMessage({type: 'faceError', message: String(e?.message || e)}); });
+  return faceLoading;
+}
+
 onmessage = async ({data}) => {
   await ready;
+  if (data.type === 'face') { faceOn = data.on; if (faceOn) loadFace(); return; }
   const {bitmap, t} = data;
   const used = delegate;
   try {
@@ -70,8 +90,13 @@ onmessage = async ({data}) => {
     const r = landmarkers[used].detectForVideo(bitmap, t);
     const ms = performance.now() - t0;
     record(ms);
+    let face = null;
+    if (faceOn && faceLm && data.face) {
+      const f0 = performance.now(), fr = faceLm.detectForVideo(bitmap, t), lm = fr.faceLandmarks?.[0];
+      face = {pts: lm ? FACE_IDX.map(i => ({x: lm[i].x, y: lm[i].y})) : null, ms: performance.now() - f0};
+    }
     postMessage({type: 'result', landmarks: r.landmarks, worldLandmarks: r.worldLandmarks, handedness: r.handedness,
-      ms, delegate: used, bench});
+      ms, delegate: used, bench, face});
   } catch (e) {
     postMessage({type: 'result', landmarks: [], worldLandmarks: [], handedness: [], ms: 0, delegate: used, bench,
       error: String(e?.message || e)});

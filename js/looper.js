@@ -7,10 +7,11 @@
 // arredondada para compassos inteiros, para ficar no tempo.
 // O agendamento é igual ao da batida: setInterval de 25 ms agendando ~120 ms à frente no relógio do áudio.
 import {ac, BEAT, playString} from './audio.js';
+import {drumHit} from './drums.js';
 import {opt} from './state.js';
 
 export let loopState = 'vazio';        // 'vazio' | 'gravando' | 'tocando' | 'camada'
-let events = [];                       // {o: segundos desde o início do loop, s, vel, pan, f, u}
+let events = [];                       // corda: {o: segundos desde o início, s, vel, pan, f, u}; tambor: {o, pad, drum, vel}
 let recStart = 0, loopStart = 0, loopLen = 0, schedUntil = 0, timer = null;
 const hits = [];                       // toques agendados, para o efeito visual: {t, ev}
 const MAX_EVENTS = 400, AHEAD = .12;
@@ -47,13 +48,24 @@ export function loopRecord(s, vel, pan, f, u, when) {
   else if (loopState === 'camada') events.push({o: (((t - loopStart) % loopLen) + loopLen) % loopLen, s, vel, pan, f, u});
 }
 
+// toque num tambor de luz
+export function loopRecordDrum(pad, drum, vel, when) {
+  if (!ac || events.length >= MAX_EVENTS) return;
+  const t = when ?? ac.currentTime;
+  if (loopState === 'gravando') events.push({o: t - recStart, pad, drum, vel});
+  else if (loopState === 'camada') events.push({o: (((t - loopStart) % loopLen) + loopLen) % loopLen, pad, drum, vel});
+}
+
 function tick() {
   const from = schedUntil, to = ac.currentTime + AHEAD;
   if (to <= from) return;
   const k0 = Math.floor((from - loopStart) / loopLen), k1 = Math.floor((to - loopStart) / loopLen);
   for (let k = k0; k <= k1; k++) for (const ev of events) {
     const T = loopStart + k * loopLen + ev.o;
-    if (T >= from && T < to) { playString(ev.s, ev.vel, ev.pan, T, ev.f); hits.push({t: T, ev}); }
+    if (T >= from && T < to) {
+      if (ev.drum) drumHit(ev.drum, ev.vel, T); else playString(ev.s, ev.vel, ev.pan, T, ev.f);
+      hits.push({t: T, ev});
+    }
   }
   schedUntil = to;
 }

@@ -2,13 +2,15 @@
 import {VERSION, opt, TIMBRES} from './state.js';
 import {ctx, W, H, dpr} from './view.js';
 import {dist, mid, clamp, crossAt} from './geom.js';
-import {ac, initAudio, playString, curFreq} from './audio.js';
+import {ac, initAudio, playString, curFreq, setWah, setGlobalBend} from './audio.js';
+import {drumHit} from './drums.js';
+import {pads, addPad, padRadius, padType, padPt, padR, PAD_MIN_DEG, PAD_HUE, PAD_NAME} from './pads.js';
 import {setBeat, beatPulse, STYLES, quantize, currentChord} from './beat.js';
 import {strings, MAX_STRINGS, noteFor, endPt, strLen, nearestEnd, nearestMid, moveEnd, bendTo, releaseBend} from './strings.js';
-import {loopState, loopPress, loopClear, loopRecord, dueLoopHits, loopProgress} from './looper.js';
+import {loopState, loopPress, loopClear, loopRecord, loopRecordDrum, dueLoopHits, loopProgress} from './looper.js';
 import {recSupported, isRecording, recSeconds, startRec, recFrame, stopRec, saveVideo} from './recorder.js';
 import {video, mirror, delegate, loadModel, startWorker, openCamera, nextCamera, toggleMirror, frameBox, toScreen} from './camera.js';
-import {spawn, drawString, drawStretch, drawTrail, drawSkeleton, drawParticles, dot, ring, label} from './draw.js';
+import {spawn, drawString, drawStretch, drawTrail, drawSkeleton, drawParticles, dot, ring, label, strokePts, drawPad, drawPadGhost} from './draw.js';
 
 const $ = s => document.querySelector(s);
 const msg = t => { $('#msg').textContent = t; };
@@ -16,7 +18,9 @@ const msg = t => { $('#msg').textContent = t; };
 let worker = null, landmarker = null, mode = '';
 let lastVT = -1, result = null, busy = false, busyT = 0, gotResult = false, detMs = 0;
 function onWorkerMsg(e) {
+  if (e.data.type === 'faceError') { faceErr = 'rosto indisponível'; return; }
   if (e.data.type !== 'result') return;
+  if (e.data.face) gotFace(e.data.face);
   result = e.data; gotResult = true; busy = false;
   detMs = detMs * .9 + e.data.ms * .1;
   const bn = e.data.bench;   // o worker compara GPU x CPU no início e fica com o mais rápido
@@ -71,8 +75,38 @@ $('#bBeat').onclick = () => {
   beat(beatIdx + 1 < STYLES.length ? beatIdx + 1 : -1);
 };
 $('#bTimbre').onclick = () => { opt.timbre = (opt.timbre + 1) % TIMBRES.length; $('#bTimbre').textContent = TIMBRES[opt.timbre]; };
-$('#bUndo').onclick = () => strings.pop();
-$('#bClear').onclick = () => { strings.length = 0; };
+// Desfazer tira o último criado (corda ou tambor); Limpar tira tudo
+$('#bUndo').onclick = () => {
+  const s = strings.at(-1), p = pads.at(-1);
+  if (p && (!s || (p.created || 0) > (s.created || 0))) pads.pop(); else strings.pop();
+};
+$('#bClear').onclick = () => { strings.length = 0; pads.length = 0; };
+
+// Rosto como pedal: boca aberta = wah, cabeça inclinada = pitch bend global (modelo de rosto no worker)
+let faceErr = '', faceTick = 0;
+const face = {open: 0, roll: 0, seenT: -1e9, pts: null, ms: 0};
+$('#bFace').onclick = () => {
+  if (!worker) { faceErr = 'rosto precisa do modo worker'; return; }
+  opt.face = !opt.face; $('#bFace').classList.toggle('on', opt.face);
+  worker.postMessage({type: 'face', on: opt.face});
+  if (!opt.face) { setWah(null); setGlobalBend(0); face.pts = null; }
+};
+const FACE_DEAD_DEG = 6, FACE_FULL_DEG = 26, FACE_MAX_SEMIS = 3;
+function gotFace(f) {
+  face.ms = face.ms * .8 + f.ms * .2;
+  if (!f.pts || !video.videoWidth) return;
+  const b = frameBox(), p = f.pts.map(q => toScreen(q, b));            // 0 lábio cima, 1 lábio baixo, 2 testa, 3 queixo, 4/5 olhos
+  const ratio = dist(p[0], p[1]) / (dist(p[2], p[3]) || 1);
+  const open = clamp((ratio - .03) / .17, 0, 1);                        // boca fechada ~0, bem aberta ~1
+  const [l, rr] = p[4].x < p[5].x ? [p[4], p[5]] : [p[5], p[4]];
+  const roll = Math.atan2(rr.y - l.y, rr.x - l.x) * 180 / Math.PI;     // + = cabeça inclinada para a direita da tela
+  face.open = face.open * .5 + open * .5; face.roll = face.roll * .5 + roll * .5;
+  face.seenT = performance.now(); face.pts = p;
+  if (!opt.face) return;
+  setWah(face.open);
+  const ex = Math.max(0, Math.abs(face.roll) - FACE_DEAD_DEG) / (FACE_FULL_DEG - FACE_DEAD_DEG);
+  setGlobalBend(Math.sign(face.roll) * Math.min(1, ex) * FACE_MAX_SEMIS);
+}
 const showMirror = () => $('#bMirror').classList.toggle('on', mirror);
 $('#bMirror').onclick = () => { toggleMirror(); showMirror(); };
 $('#bCam').onclick = async () => {
@@ -177,7 +211,7 @@ function loop(now) {
       createImageBitmap(video, {resizeWidth: Math.round(video.videoWidth * sc), resizeHeight: Math.round(video.videoHeight * sc),
         resizeQuality: 'low'})
         .catch(() => createImageBitmap(video))                    // navegador sem suporte a resize
-        .then(bitmap => worker.postMessage({bitmap, t: performance.now()}, [bitmap]))
+        .then(bitmap => worker.postMessage({bitmap, t: performance.now(), face: opt.face && (faceTick ^= 1) === 1}, [bitmap]))
         .catch(() => { busy = false; });
     }
     if (gotResult) { gotResult = false; fresh = true; }
@@ -209,7 +243,7 @@ function loop(now) {
   });
   // mão sumiu: para de tocar/rastro na hora, mas só larga pinça/corda se continuar sumida por LOST_GRACE
   for (const id in hand) if (!hands.some(h => h.id === id)) {
-    const st = hand[id]; st.prev = null; st.trail.length = 0; st.flip = 0; st.tipPrev = null;
+    const st = hand[id]; st.prev = null; st.trail.length = 0; st.flip = 0; st.tipPrev = null; st.tips = null; st.padMaking = false;
     st.lostT ||= now;
     if (now - st.lostT > LOST_GRACE) {
       if (st.grab && st.grab.e === 'mid') releaseBend(st.grab.s);   // corda puxada volta ao normal
@@ -248,6 +282,19 @@ function loop(now) {
       }
       st.grab = null;
     }
+    // tambor de luz: pinça livre (sem agarrar nada), parada no lugar, + giro do pulso
+    const ang = Math.atan2(h.pts[9].y - h.pts[0].y, h.pts[9].x - h.pts[0].x);
+    if (st.pinch && !st.wasPinch) { st.padA0 = ang; st.padC = st.pinchPt; st.padMaking = false; }
+    if (st.pinch && !st.grab && st.padC) {
+      st.padDeg = ((ang - st.padA0 + 3 * Math.PI) % (2 * Math.PI) - Math.PI) * 180 / Math.PI;
+      if (!st.padMaking && Math.abs(st.padDeg) > PAD_MIN_DEG && dist(st.pinchPt, st.padC) < st.size * .7) st.padMaking = true;
+    }
+    if (!st.pinch && st.padMaking) {                               // soltou: o tambor fica
+      const p = addPad(st.padC, padRadius(st.padDeg), now);
+      drumHit(p.type, .6); p.hitT = now; p.vel = .6;
+      spawn(st.padC, p.hue, 18, 1.4);
+    }
+    if (!st.pinch) { st.padMaking = false; st.padC = null; }
     st.wasPinch = st.pinch;
     if (st.grab) (st.grab.e === 'mid' ? bendTo : moveEnd)(st.grab, st.pinchPt);
   }
@@ -256,6 +303,7 @@ function loop(now) {
   const free = hands.filter(h => h.st.pinch && !h.st.grab);
   if (free.length === 2) {
     stretch = {a: free[0].st.pinchPt, b: free[1].st.pinchPt};
+    for (const h of free) h.st.padMaking = false;
     for (const h of free) h.st.pinchT = -1e9;   // quem está esticando não agarra a ponta da corda recém-criada
   } else if (stretch) {
     const len = dist(stretch.a, stretch.b);
@@ -263,11 +311,35 @@ function loop(now) {
       const n = noteFor(len);
       const s = {ax: stretch.a.x / W, ay: stretch.a.y / H, bx: stretch.b.x / W, by: stretch.b.y / H, ...n,
         hitT: now, amp: 10 * dpr, u: .5, dir: 1};
-      strings.push(s); if (strings.length > MAX_STRINGS) strings.shift();
+      s.created = now; strings.push(s); if (strings.length > MAX_STRINGS) strings.shift();
       playString(s, .6, 0);
       spawn(stretch.a, n.hue, 14, 1.4); spawn(stretch.b, n.hue, 14, 1.4);
     }
     stretch = null;
+  }
+
+  // 2b) tambores: ponta do indicador ou do médio ENTRANDO no círculo (de fora para dentro) com velocidade
+  for (const h of hands) {
+    const st = h.st;
+    if (!fresh) continue;
+    if (st.tips && !st.padMaking && pads.length) {
+      const dt = Math.max(16, now - st.prevT);
+      for (const i of [8, 12]) {
+        const cur = h.pts[i], prev = st.tips[i];
+        if (!prev) continue;
+        const vel = Math.min(1, dist(cur, prev) * (33 / dt) / (40 * dpr));
+        if (vel < .12) continue;
+        for (const p of pads) {
+          const c = padPt(p), R = padR(p);
+          if (dist(prev, c) > R && dist(cur, c) <= R && now - p.hitT > 120) {
+            const when = ac ? quantize(ac.currentTime) : undefined;
+            drumHit(p.type, vel, when); loopRecordDrum(p, p.type, vel, when);
+            p.hitT = now; p.vel = vel;
+          }
+        }
+      }
+    }
+    st.tips = {8: h.pts[8], 12: h.pts[12]};
   }
 
   // 3) tocar: indicador de mão que não está em pinça cruzando uma corda (inclusive a que a outra mão segura)
@@ -298,6 +370,7 @@ function loop(now) {
 
   // 3b) toques do looper chegando na hora: a corda vibra na tela (o som já foi agendado)
   for (const ev of dueLoopHits()) {
+    if (ev.pad) { if (pads.includes(ev.pad)) { ev.pad.hitT = now; ev.pad.vel = ev.vel; } continue; }
     const s = ev.s;
     if (!strings.includes(s)) continue;
     s.hitT = now; s.u = ev.u ?? .5; s.dir = 1; s.amp = (5 + 25 * ev.vel) * dpr;
@@ -306,6 +379,11 @@ function loop(now) {
   }
 
   // 4) cordas fixas + pontas agarradas / agarráveis
+  for (const p of pads) drawPad(padPt(p), padR(p), p.hue, p.hitT, p.vel, now, pulse, PAD_NAME[p.type]);
+  for (const h of hands) if (h.st.padMaking) {
+    const rad = padRadius(h.st.padDeg), t = padType(rad);
+    drawPadGhost(h.st.padC, rad, PAD_HUE[t], h.st.padDeg, PAD_NAME[t]);
+  }
   for (const s of strings) drawString(s, now, pulse);
   for (const h of hands) {
     const st = h.st;
@@ -332,6 +410,11 @@ function loop(now) {
   if (opt.skel) for (const h of hands) drawSkeleton(h.pts, h.st.pinch ? h.st.pinchPt : null);
   drawParticles();
 
+  if (opt.face && face.pts && performance.now() - face.seenT < 500) {
+    const p = face.pts;
+    strokePts([p[4], p[5]], 'hsla(190,100%,70%,.6)', 2 * dpr);                                // olhos = inclinação
+    strokePts([p[0], p[1]], `hsla(300,100%,${60 + 30 * face.open}%,.9)`, (3 + 6 * face.open) * dpr);   // boca = wah
+  } else if (opt.face && performance.now() - face.seenT > 500) { setWah(null); setGlobalBend(0); }
   if (isRecording()) recFrame();
   if (loopState === 'tocando') $('#bLoop').style.setProperty('--p', (loopProgress() * 100).toFixed(1) + '%');
 
@@ -342,6 +425,8 @@ function loop(now) {
     $('#hud').textContent = `${VERSION} · ${fpsN} fps · mãos ${detN}/s (pior ${worst.toFixed(0)} ms) · ` +
       `detecção ${detMs.toFixed(0)} ms (${mode})` + (cms ? ` · pinça ${cms} cm` : '') + ` · ${strings.length} corda(s)` +
       (currentChord() ? ` · acorde ${currentChord().name}` : '') +
+      (opt.face ? (face.pts ? ` · rosto: boca ${(face.open * 100).toFixed(0)}% inclinação ${face.roll.toFixed(0)}° (${face.ms.toFixed(0)} ms)` : ' · rosto: procurando') : '') +
+      (faceErr ? ' · ' + faceErr : '') +
       (isRecording() ? ` · ● REC ${Math.floor(recSeconds() / 60)}:${String(Math.floor(recSeconds() % 60)).padStart(2, '0')}` : '');
     fpsN = 0; detN = 0; gapMax = 0; fpsT = now;
   }

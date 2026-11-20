@@ -156,3 +156,36 @@ export function drawSkeleton(pts, pinchPt) {
   if (pinchPt) dot(pinchPt, 6 * dpr, '#fff');
   ctx.globalCompositeOperation = 'lighter';
 }
+
+// ---------- tambores de luz ----------
+function circle(c, r, color, w) {
+  ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); ctx.arc(c.x, c.y, Math.max(1, r), 0, Math.PI * 2); ctx.stroke();
+}
+// pad fixo: anel de neon; ao ser batido, incha e solta uma onda de luz que se expande
+export function drawPad(c, r, hue, hitT, vel, now, pulse, name) {
+  const age = (now - hitT) / 1000, hit = Math.exp(-age * 9) * (.4 + .6 * vel);
+  const glow = Math.max(hit, pulse * .5), rr = r * (1 + .1 * hit);
+  circle(c, rr, `hsla(${hue},100%,55%,${.12 + .25 * glow})`, (14 + 14 * hit) * dpr);
+  circle(c, rr, `hsla(${hue},100%,70%,${.45 + .4 * glow})`, 4 * dpr);
+  circle(c, rr, `hsla(${hue},100%,${85 + 12 * glow}%,1)`, 1.6 * dpr);
+  circle(c, rr * .55, `hsla(${hue},100%,70%,${.12 + .3 * glow})`, 1.2 * dpr);
+  if (age < .45) circle(c, r * (1 + age * 1.6), `hsla(${hue},100%,80%,${(1 - age / .45) * .6 * (.4 + .6 * vel)})`, 2.5 * dpr);
+  if (age < .05) for (let i = 0; i < 2; i++) spawn({x: c.x + (Math.random() - .5) * r, y: c.y + (Math.random() - .5) * r}, hue, 3, 1 + vel);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.font = `600 ${11 * dpr}px -apple-system,system-ui,sans-serif`; ctx.textAlign = 'center';
+  ctx.fillStyle = `hsla(${hue},100%,85%,${.55 + .4 * glow})`; ctx.fillText(name, c.x, c.y + 4 * dpr);
+  ctx.textAlign = 'start'; ctx.globalCompositeOperation = 'lighter';
+}
+// pad sendo criado (pinça + giro): anel girando com raios, e o nome do tipo
+export function drawPadGhost(c, r, hue, deg, name) {
+  const a0 = deg * Math.PI / 180;
+  ctx.setLineDash([10 * dpr, 8 * dpr]); ctx.lineDashOffset = -a0 * r;
+  circle(c, r, `hsla(${hue},100%,75%,.85)`, 2.5 * dpr);
+  ctx.setLineDash([]);
+  circle(c, r, `hsla(${hue},100%,55%,.18)`, 16 * dpr);
+  for (let i = 0; i < 3; i++) {
+    const a = a0 + i * 2.094;
+    strokePts([{x: c.x + Math.cos(a) * r * .3, y: c.y + Math.sin(a) * r * .3}, {x: c.x + Math.cos(a) * r * .9, y: c.y + Math.sin(a) * r * .9}], `hsla(${hue},100%,80%,.5)`, 1.5 * dpr);
+  }
+  label({x: c.x - 10 * dpr, y: c.y - r - 6 * dpr}, name, hue);
+}

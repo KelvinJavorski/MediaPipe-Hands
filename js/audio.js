@@ -1,15 +1,17 @@
 // Som das cordas: AudioContext, cadeia de efeitos e os timbres.
 //
-// Cadeia: vozes das cordas -> master -> duck (sidechain da batida) -> compressor
-//         master -> delay no tempo (colcheia pontuada) e reverb -> duck
+// Cadeia: vozes das cordas -> master -> fx (pedal wah do rosto) -> duck (sidechain da batida) -> compressor
+//         fx -> delay no tempo (colcheia pontuada) e reverb -> duck
 //         batida -> drums -> compressor (não é "abaixada" por ela mesma)
+//         tambores de luz -> padBus -> compressor
 import {opt} from './state.js';
 
 export let BPM = 112, BEAT = 60 / BPM;      // mudam com o estilo da batida (setTempo)
-export let ac, master, duck, drums, noiseBuf, distCurve;
+export let ac, master, duck, drums, padBus, noiseBuf, distCurve;
 export const DRUMS_GAIN = .42;              // volume base da batida (cada estilo multiplica por style.vol)
-let delayNode, comp;
-const voices = [];          // vozes tocando: {s, end, set(f), kill(t)}
+let delayNode, comp, fx;
+let globalMul = 1;          // pitch bend global (cabeça inclinada), multiplica todas as vozes
+const voices = [];          // vozes tocando: {s, base (freq sem o bend global), end, set(f), kill(t)}
 const MAX_VOICES = 10;
 
 // precisa ser chamado dentro de um gesto do usuário (exigência do iOS)
@@ -19,11 +21,15 @@ export function initAudio() {
   duck = ac.createGain(); duck.connect(comp);
   // mistura: as cordas são o instrumento principal e devem ficar acima da batida (medido: corda/batida ≥ ~1,2)
   drums = ac.createGain(); drums.gain.value = DRUMS_GAIN; drums.connect(comp);
-  master = ac.createGain(); master.gain.value = 1; master.connect(duck);
+  master = ac.createGain(); master.gain.value = 1;
+  // pedal: filtro passa-baixas; desligado fica aberto em 20 kHz (transparente), o wah o move com a boca
+  fx = ac.createBiquadFilter(); fx.type = 'lowpass'; fx.frequency.value = 20000; fx.Q.value = .7;
+  master.connect(fx); fx.connect(duck);
+  padBus = ac.createGain(); padBus.gain.value = .9; padBus.connect(comp);
   // delay com realimentação filtrada, sincronizado com a batida
   const dl = ac.createDelay(2), fb = ac.createGain(), lp = ac.createBiquadFilter(), wet = ac.createGain();
   dl.delayTime.value = BEAT * .75; fb.gain.value = .28; lp.type = 'lowpass'; lp.frequency.value = 1800; wet.gain.value = .18;   // eco discreto: com mais, as notas embolavam
-  master.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); lp.connect(wet); wet.connect(duck);
+  fx.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); lp.connect(wet); wet.connect(duck);
   delayNode = dl;
   // curva de saturação (tanh) para os timbres dark e o baixo distorcido
   distCurve = new Float32Array(1024);
@@ -33,7 +39,7 @@ export function initAudio() {
   const ir = ac.createBuffer(2, n, sr);
   for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n) ** 3; }
   rv.buffer = ir; rvWet.gain.value = .3;
-  master.connect(rv); rv.connect(rvWet); rvWet.connect(duck);
+  fx.connect(rv); rv.connect(rvWet); rvWet.connect(duck);
   noiseBuf = ac.createBuffer(1, sr, sr);
   { const d = noiseBuf.getChannelData(0); for (let i = 0; i < sr; i++) d[i] = Math.random() * 2 - 1; }
   const o = ac.createOscillator(), g = ac.createGain(); g.gain.value = 0; // "destrava" o áudio no iOS
@@ -186,8 +192,8 @@ export function playString(s, vel, pan, when, freq) {
   if (ac.createStereoPanner) { const p = ac.createStereoPanner(); p.pan.value = pan; out.connect(p); node = p; }
   node.connect(master);
   const f = freq ? soundFreq(freq, 1, t) : soundFreq(s.f, s.bendMul || 1, t);
-  const v = VOICES[opt.timbre](f, vel, t, out);
-  v.s = freq ? null : s;
+  const v = VOICES[opt.timbre](f * globalMul, vel, t, out);
+  v.s = freq ? null : s; v.base = f;
   v.out = out; voices.push(v);
   for (let i = voices.length - 1; i >= 0; i--) if (voices[i].end < now) voices.splice(i, 1);
   while (voices.length > MAX_VOICES) { const o = voices.shift(); o.out.gain.setTargetAtTime(0, now, .015); o.kill(now); }
@@ -196,7 +202,24 @@ export function playString(s, vel, pan, when, freq) {
 // a corda mudou de nota (comprimento ou bend): as vozes que estão soando deslizam para a nova nota
 export function retune(s) {
   const f = soundFreq(s.f, s.bendMul || 1, ac ? ac.currentTime : 0);
-  for (const v of voices) if (v.s === s) v.set(f);
+  for (const v of voices) if (v.s === s) { v.base = f; v.set(f * globalMul); }
+}
+
+// Pedal wah (boca): x = 0..1 (fechada..aberta) move o filtro de ~350 Hz a ~3,5 kHz; null desliga (filtro aberto)
+export function setWah(x) {
+  if (!fx) return;
+  const t = ac.currentTime;
+  if (x === null) { fx.frequency.setTargetAtTime(20000, t, .08); fx.Q.setTargetAtTime(.7, t, .08); return; }
+  fx.frequency.setTargetAtTime(350 * 2 ** (Math.max(0, Math.min(1, x)) * 3.3), t, .03);
+  fx.Q.setTargetAtTime(5, t, .05);
+}
+
+// Pitch bend global (cabeça inclinada): todas as vozes soando e as próximas sobem/descem 'semis' semitons
+export function setGlobalBend(semis) {
+  const m = 2 ** (semis / 12);
+  if (Math.abs(m - globalMul) < .001) return;
+  globalMul = m;
+  for (const v of voices) if (v.base) v.set(v.base * globalMul);
 }
 
 // som final (depois do compressor) como MediaStream, para gravar vídeo com áudio
