@@ -80,9 +80,10 @@ $('#bCam').onclick = async () => {
 /* ---------- lógica por frame ---------- */
 const grabR = st => Math.max(40 * dpr, st.size * .6);   // raio para agarrar a ponta de uma corda
 let fpsT = performance.now(), fpsN = 0, detN = 0;
-// No celular, desenhar a 60 fps quase não acrescenta (as mãos atualizam ~13x/s) e disputa a GPU
-// com a detecção: desenha no máximo a ~30 fps, mas sempre que chega leitura nova das mãos.
-const FRAME_MIN_MS = matchMedia('(pointer: coarse)').matches ? 30 : 0;
+// Desenhar mais rápido que as mãos atualizam quase não acrescenta e disputa a GPU com a detecção
+// (medido no PC com tela de 120 Hz: detecção 35 → 76 ms com as cordas vibrando). Teto: ~30 fps no
+// celular e ~60 fps no PC; todo frame com leitura nova das mãos é desenhado na hora.
+const FRAME_MIN_MS = matchMedia('(pointer: coarse)').matches ? 30 : 15;
 const DET_W = 320;          // largura da imagem enviada ao worker de detecção
 let lastDraw = 0, lastDet = 0, gapMax = 0;   // gapMax = maior intervalo sem leitura das mãos no último segundo (HUD)
 

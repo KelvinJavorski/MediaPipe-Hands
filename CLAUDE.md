@@ -54,7 +54,7 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 ### Convenções importantes
 
 - Coordenadas das cordas são guardadas **normalizadas** (`ax, ay, bx, by` em 0..1 da tela) para sobreviver a resize/rotação. Converter com `endPt(s, 'a'|'b')`.
-- Tudo que é tamanho em pixel é multiplicado por `dpr` (cap em 1.5, por desempenho).
+- Tudo que é tamanho em pixel é multiplicado por `dpr` (escala canvas/CSS: até 1,5 e limitada por `MAX_PIXELS`; pode ser < 1 no PC).
 - Landmarks MediaPipe usados: `0` pulso, `4` ponta do polegar, `8` ponta do indicador, `9` base do dedo médio (`dist(0,9)` = escala da mão). `worldLandmarks` (metros, centrados na mão) são usados para a distância real da pinça; o HUD mostra essa distância em cm por mão.
 - `HandLandmarker.HAND_CONNECTIONS` é array de `{start, end}`.
 - Mão em pinça **não** toca cordas. Uma mão pode segurar a ponta de uma corda enquanto a outra toca (inclusive a mesma corda).
@@ -89,7 +89,8 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 - O vídeo é mostrado pelo `<video>` (compositor da GPU), não com `drawImage` no canvas.
 - A detecção roda num Web Worker com GPU quando possível (`worker GPU` no HUD): o desenho segue a 60 fps e as mãos atualizam no ritmo que o aparelho consegue. GPU em worker exige OffscreenCanvas com WebGL2 (Safari 17+); sem isso, cai para o thread principal (`principal GPU|CPU`), onde cada detecção trava o desenho.
 - A primeira detecção na GPU leva ~2 s (compilação de shaders); depois, poucos ms no desktop.
-- No celular (`pointer: coarse`) o desenho é limitado a ~30 fps (`FRAME_MIN_MS`), mas todo frame com leitura nova das mãos é processado na hora. O pulso da batida só clareia as cores das cordas; largura, raios extras e partículas dependem só do toque (antes o pulso dobrava o custo do desenho a cada bumbo).
+- O desenho é limitado a ~30 fps no celular (`pointer: coarse`) e ~60 fps no PC (`FRAME_MIN_MS`), mas todo frame com leitura nova das mãos é processado na hora. Medido no PC com tela de 120 Hz: sem teto, a detecção ia de 35 para 76 ms com as cordas vibrando.
+- O canvas tem teto de `MAX_PIXELS` = 1,2 MP (`view.js`): no PC 2000×1040 a escala cai de 1,5 para ~0,76 (custo do desenho 5,9 → 2,7 ms/quadro); no celular continua 1,5. O pulso da batida só clareia as cores das cordas; largura, raios extras e partículas dependem só do toque (antes o pulso dobrava o custo do desenho a cada bumbo).
 - A imagem mandada ao worker é reduzida para `DET_W` = 320 px de largura (o modelo usa ~224 px; copiar para a GPU no Safari é caro). Se a detecção de mãos longe piorar, aumentar `DET_W`.
 - Reverb com IR de 1,6 s; saturação do bumbo e do baixo reese sem oversample.
 - HUD: `mãos N/s (pior X ms)` = leituras por segundo e o maior intervalo sem leitura no último segundo (mostra travadas).
