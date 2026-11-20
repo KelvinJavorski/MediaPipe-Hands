@@ -17,6 +17,8 @@ function onWorkerMsg(e) {
   if (e.data.type !== 'result') return;
   result = e.data; gotResult = true; busy = false;
   detMs = detMs * .9 + e.data.ms * .1;
+  const bn = e.data.bench;   // o worker compara GPU x CPU no início e fica com o mais rápido
+  mode = 'worker ' + e.data.delegate + (bn ? ` · GPU ${bn.gpu}/CPU ${bn.cpu} ms` : ' · comparando GPU/CPU');
 }
 async function initDetector() {
   if (worker || landmarker) return;
