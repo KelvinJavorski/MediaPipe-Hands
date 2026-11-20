@@ -174,6 +174,19 @@ const GRAB_WINDOW = 300;    // ms após fechar a pinça em que ela ainda pode ag
 const LOST_GRACE = 300;     // ms que a mão pode sumir do rastreamento sem soltar a corda que segura
 const PINCH_MAX_MOVE = .35; // ponta do indicador andando mais que isso (× tamanho da mão) por leitura: não começa pinça
 const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+// Giro do antebraço (como girar uma maçaneta) em 3D: ângulo da linha base do indicador (5) -> base do
+// mínimo (17) em volta do eixo pulso (0) -> base do médio (9), comparado com o início da pinça.
+// No plano da imagem esse giro quase não aparece (a linha pulso->médio fica no mesmo lugar).
+const sub3 = (a, b) => ({x: a.x - b.x, y: a.y - b.y, z: a.z - b.z});
+const dot3 = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+const cross3 = (a, b) => ({x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x});
+function handRoll(w, v0) {
+  const ax = sub3(w[9], w[0]), n = Math.hypot(ax.x, ax.y, ax.z) || 1;
+  ax.x /= n; ax.y /= n; ax.z /= n;
+  const proj = v => { const k = dot3(v, ax); return {x: v.x - k * ax.x, y: v.y - k * ax.y, z: v.z - k * ax.z}; };
+  const p0 = proj(v0), p1 = proj(sub3(w[17], w[5]));
+  return Math.atan2(dot3(ax, cross3(p0, p1)), dot3(p0, p1)) * 180 / Math.PI;
+}
 function updatePinch(st, pts, size, world, now) {
   const r2 = dist(pts[4], pts[8]) / (size || 1);              // 2D relativo ao tamanho da mão
   const m = world ? dist3(world[4], world[8]) : null;         // 3D em metros (se disponível)
@@ -187,7 +200,7 @@ function updatePinch(st, pts, size, world, now) {
   const move = st.tipPrev ? dist(pts[8], st.tipPrev) / (size || 1) : 0;
   st.tipPrev = pts[8];
   const raw = st.pinch
-    ? !(r2 > PINCH_OUT_2D || (m !== null && m > PINCH_OUT_M))
+    ? !((r2 > PINCH_OUT_2D && !(st.padMaking && m !== null)) || (m !== null && m > PINCH_OUT_M))
     : r2 < PINCH_IN_2D && (m === null || m < PINCH_IN_M) && tipToTip && move < PINCH_MAX_MOVE;
   if (raw === st.pinch) { st.flip = 0; return; }
   if (++st.flip >= (raw ? PINCH_FRAMES_IN : PINCH_FRAMES_OUT)) {
@@ -207,11 +220,13 @@ function loop(now) {
       lastVT = video.currentTime; busy = true; busyT = now;
       // imagem reduzida (DET_W px de largura): o modelo trabalha em ~224 px de qualquer forma, e no Safari
       // copiar a imagem para a GPU é caro. As coordenadas são normalizadas, então nada muda no mapeamento.
-      const sc = Math.min(1, DET_W / (video.videoWidth || DET_W));
+      const faceNow = opt.face && (faceTick ^= 1) === 1;
+      // quadro do rosto em resolução cheia: em 320 px um rosto a um braço da câmera fica pequeno demais
+      const sc = faceNow ? 1 : Math.min(1, DET_W / (video.videoWidth || DET_W));
       createImageBitmap(video, {resizeWidth: Math.round(video.videoWidth * sc), resizeHeight: Math.round(video.videoHeight * sc),
         resizeQuality: 'low'})
         .catch(() => createImageBitmap(video))                    // navegador sem suporte a resize
-        .then(bitmap => worker.postMessage({bitmap, t: performance.now(), face: opt.face && (faceTick ^= 1) === 1}, [bitmap]))
+        .then(bitmap => worker.postMessage({bitmap, t: performance.now(), face: faceNow}, [bitmap]))
         .catch(() => { busy = false; });
     }
     if (gotResult) { gotResult = false; fresh = true; }
@@ -239,7 +254,7 @@ function loop(now) {
     const size = dist(pts[0], pts[9]);
     if (fresh) updatePinch(st, pts, size, result.worldLandmarks?.[i], now);
     st.pinchPt = mid(pts[4], pts[8]); st.size = size; st.lostT = 0;
-    return {id, pts, st};
+    return {id, pts, st, world: result.worldLandmarks?.[i]};
   });
   // mão sumiu: para de tocar/rastro na hora, mas só larga pinça/corda se continuar sumida por LOST_GRACE
   for (const id in hand) if (!hands.some(h => h.id === id)) {
@@ -284,10 +299,16 @@ function loop(now) {
     }
     // tambor de luz: pinça livre (sem agarrar nada), parada no lugar, + giro do pulso
     const ang = Math.atan2(h.pts[9].y - h.pts[0].y, h.pts[9].x - h.pts[0].x);
-    if (st.pinch && !st.wasPinch) { st.padA0 = ang; st.padC = st.pinchPt; st.padMaking = false; }
+    if (st.pinch && !st.wasPinch) {
+      st.padA0 = ang; st.padC = st.pinchPt; st.padMaking = false; st.padV0 = h.world ? sub3(h.world[17], h.world[5]) : null;
+    }
     if (st.pinch && !st.grab && st.padC) {
-      st.padDeg = ((ang - st.padA0 + 3 * Math.PI) % (2 * Math.PI) - Math.PI) * 180 / Math.PI;
-      if (!st.padMaking && Math.abs(st.padDeg) > PAD_MIN_DEG && dist(st.pinchPt, st.padC) < st.size * .7) st.padMaking = true;
+      // giro = o maior entre o giro no plano da imagem e o giro do antebraço em 3D
+      const flat = ((ang - st.padA0 + 3 * Math.PI) % (2 * Math.PI) - Math.PI) * 180 / Math.PI;
+      const roll = h.world && st.padV0 ? handRoll(h.world, st.padV0) : 0;
+      if (fresh) st.padDeg = Math.abs(roll) > Math.abs(flat) ? roll : flat;
+      // a pinça fica longe do eixo do giro, então ela anda ao girar: tolerância de 1,5 × o tamanho da mão
+      if (!st.padMaking && Math.abs(st.padDeg) > PAD_MIN_DEG && dist(st.pinchPt, st.padC) < st.size * 1.5) st.padMaking = true;
     }
     if (!st.pinch && st.padMaking) {                               // soltou: o tambor fica
       const p = addPad(st.padC, padRadius(st.padDeg), now);
