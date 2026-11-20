@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Raios nas Mãos</title>
+<title>Harpa de Ar</title>
 <style>
 html,body{margin:0;height:100%;background:#000;color:#fff;font:15px/1.4 -apple-system,system-ui,sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
 video{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
@@ -14,10 +14,12 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
   background:linear-gradient(transparent,rgba(0,0,0,.65))}
 button{font:inherit;color:#fff;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.28);border-radius:999px;padding:10px 16px;min-height:44px;cursor:pointer}
 button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
-#intro{position:fixed;inset:0;display:grid;place-content:center;gap:18px;text-align:center;padding:24px;background:radial-gradient(circle at 50% 40%,#0c2236,#000 70%)}
-#intro h1{margin:0;font-size:32px;line-height:1.1}
-#intro p{margin:0;max-width:30em;color:#b9cbd8}
+#intro{position:fixed;inset:0;display:grid;place-content:center;gap:16px;text-align:center;padding:24px;background:radial-gradient(circle at 50% 40%,#0c2236,#000 70%)}
+#intro h1{margin:0;font-size:34px;line-height:1.1}
+#intro ol{margin:0 auto;padding-left:1.2em;max-width:28em;text-align:left;color:#c3d4e0}
+#intro li{margin:6px 0}
 #start{font-size:18px;padding:14px 28px;background:#8fe3ff;color:#001018;border:0;justify-self:center}
+#msg{margin:0;color:#ffb3b3;min-height:1.4em}
 #hud{position:fixed;top:calc(8px + env(safe-area-inset-top));left:12px;font:12px ui-monospace,monospace;color:#8fe3ff;opacity:.8}
 [hidden]{display:none!important}
 </style>
@@ -28,16 +30,22 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
 <div id="hud"></div>
 
 <div id="intro">
-  <h1>Raios nas Mãos</h1>
-  <p>Mostre as duas mãos para a câmera: as pontas dos dedos se ligam com raios. Com uma mão só, aproxime o polegar dos outros dedos. O indicador deixa um rastro de luz.</p>
-  <button id="start">Iniciar câmera</button>
-  <p id="msg"></p>
+  <h1>Harpa de Ar</h1>
+  <ol>
+    <li>Faça pinça (polegar + indicador) com as <b>duas mãos</b> e afaste-as: uma corda estica entre elas.</li>
+    <li>Solte a pinça: a corda <b>fica presa</b> onde você deixou.</li>
+    <li>Passe o indicador pela corda para tocar. Corda longa = grave, curta = agudo.</li>
+  </ol>
+  <button id="start">Iniciar câmera e som</button>
+  <p id="msg">No iPhone, desligue o modo silencioso para ouvir.</p>
 </div>
 
 <div id="ui" hidden>
   <button id="bSkel" class="on">Esqueleto</button>
-  <button id="bBolt" class="on">Raios</button>
   <button id="bTrail" class="on">Rastro</button>
+  <button id="bSound" class="on">Som</button>
+  <button id="bUndo">Desfazer</button>
+  <button id="bClear">Limpar</button>
   <button id="bCam">Trocar câmera</button>
 </div>
 
@@ -47,15 +55,14 @@ import {FilesetResolver, HandLandmarker} from "https://cdn.jsdelivr.net/npm/@med
 const $ = s => document.querySelector(s);
 const video = $('#v'), cv = $('#c'), ctx = cv.getContext('2d');
 const msg = t => { $('#msg').textContent = t; };
-const opt = {skel: true, bolt: true, trail: true};
-const TIPS = [4, 8, 12, 16, 20];
-const HUES = [50, 190, 290, 140, 20];      // uma cor por dedo
+const opt = {skel: true, trail: true, sound: true};
 let landmarker, stream, devices = [], devIdx = -1, mirror = true;
 let W = 0, H = 0, dpr = 1, lastVT = -1, result = null;
-const particles = [];
-const trails = [[], []];
+const particles = [], strings = [];
+const hand = {};            // estado por mão (Left/Right): pinça, posição anterior, rastro
+let stretch = null;         // corda sendo esticada {a,b}
 
-if (!window.isSecureContext) msg('A câmera só funciona via https:// ou localhost. Veja as instruções de como abrir.');
+if (!window.isSecureContext) msg('A câmera só funciona via https:// ou localhost.');
 
 function resize() {
   dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -64,6 +71,53 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
+/* ---------- som: corda dedilhada (Karplus-Strong) ---------- */
+let ac, master;
+const bufCache = new Map();
+function initAudio() {
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  master = ac.createDynamicsCompressor(); master.connect(ac.destination);
+  const o = ac.createOscillator(), g = ac.createGain(); g.gain.value = 0; // "destrava" o áudio no iOS
+  o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + .05);
+}
+function pluckBuffer(f) {
+  const key = Math.round(f * 10);
+  if (bufCache.has(key)) return bufCache.get(key);
+  const sr = ac.sampleRate, N = Math.max(2, Math.round(sr / f)), len = Math.round(sr * 2.5);
+  const buf = ac.createBuffer(1, len, sr), d = buf.getChannelData(0), ring = new Float32Array(N);
+  for (let i = 0; i < N; i++) ring[i] = Math.random() * 2 - 1;
+  const decay = .996;
+  for (let i = 0, p = 0; i < len; i++) {
+    const n = (p + 1) % N, v = ring[p];
+    d[i] = v; ring[p] = decay * .5 * (v + ring[n]); p = n;
+  }
+  bufCache.set(key, buf); return buf;
+}
+function playString(s, vel, pan) {
+  if (!opt.sound || !ac) return;
+  if (ac.state !== 'running') ac.resume();
+  const src = ac.createBufferSource(), g = ac.createGain();
+  src.buffer = pluckBuffer(s.f);
+  g.gain.value = .25 + .5 * vel;
+  let node = src.connect(g);
+  if (ac.createStereoPanner) { const p = ac.createStereoPanner(); p.pan.value = pan; node = node.connect(p); }
+  node.connect(master); src.start();
+}
+
+/* ---------- comprimento -> nota (escala pentatônica) ---------- */
+const NAMES = ['Dó', 'Dó#', 'Ré', 'Ré#', 'Mi', 'Fá', 'Fá#', 'Sol', 'Sol#', 'Lá', 'Lá#', 'Si'];
+const PENTA = [0, 2, 4, 7, 9];
+function noteFor(lenPx) {
+  const r = Math.min(1, lenPx / Math.hypot(W, H));              // 0..1 da diagonal da tela
+  // corda real: frequência ~ 1/comprimento. 3 oitavas, de Dó2 (longa) a Dó5 (curta)
+  const semis = Math.max(0, Math.min(36, Math.round(12 * Math.log2(.9 / Math.max(r, .9 / 8)))));
+  let best = 0, bd = 99;
+  for (let o = 0; o <= 3; o++) for (const p of PENTA) { const s = o * 12 + p; if (s <= 36 && Math.abs(s - semis) < bd) { bd = Math.abs(s - semis); best = s; } }
+  const midi = 36 + best;                                       // 36 = Dó2
+  return {f: 440 * 2 ** ((midi - 69) / 12), name: NAMES[midi % 12] + (Math.floor(midi / 12) - 1), hue: (200 + best * 9) % 360};
+}
+
+/* ---------- MediaPipe + câmera ---------- */
 async function loadModel() {
   const files = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
   const base = {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"};
@@ -72,24 +126,21 @@ async function loadModel() {
   try { return await HandLandmarker.createFromOptions(files, cfg("GPU")); }
   catch (e) { console.warn('GPU falhou, usando CPU', e); return await HandLandmarker.createFromOptions(files, cfg("CPU")); }
 }
-
 async function openCamera(deviceId) {
   if (stream) stream.getTracks().forEach(t => t.stop());
-  const video_c = deviceId ? {deviceId: {exact: deviceId}} : {facingMode: 'user'};
-  stream = await navigator.mediaDevices.getUserMedia({audio: false, video: {...video_c, width: {ideal: 1280}, height: {ideal: 720}}});
-  video.srcObject = stream;
-  await video.play();
+  const vc = deviceId ? {deviceId: {exact: deviceId}} : {facingMode: 'user'};
+  stream = await navigator.mediaDevices.getUserMedia({audio: false, video: {...vc, width: {ideal: 1280}, height: {ideal: 720}}});
+  video.srcObject = stream; await video.play();
   const s = stream.getVideoTracks()[0].getSettings();
-  // espelha câmera frontal/webcam; não espelha a traseira
   mirror = s.facingMode ? s.facingMode === 'user' : true;
   devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
   devIdx = Math.max(0, devices.findIndex(d => d.deviceId === s.deviceId));
   lastVT = -1;
 }
-
 $('#start').onclick = async () => {
   try {
     $('#start').disabled = true;
+    initAudio();
     msg('Carregando modelo de mãos…');
     landmarker = landmarker || await loadModel();
     msg('Abrindo câmera…');
@@ -102,79 +153,96 @@ $('#start').onclick = async () => {
     $('#start').disabled = false;
   }
 };
-
 const toggle = (id, key) => $(id).onclick = () => { opt[key] = !opt[key]; $(id).classList.toggle('on', opt[key]); };
-toggle('#bSkel', 'skel'); toggle('#bBolt', 'bolt'); toggle('#bTrail', 'trail');
+toggle('#bSkel', 'skel'); toggle('#bTrail', 'trail'); toggle('#bSound', 'sound');
+$('#bUndo').onclick = () => strings.pop();
+$('#bClear').onclick = () => { strings.length = 0; };
 $('#bCam').onclick = async () => {
   if (devices.length < 2) return;
   devIdx = (devIdx + 1) % devices.length;
   try { await openCamera(devices[devIdx].deviceId); } catch (e) { console.error(e); }
 };
 
-// mapeamento "cover" do vídeo para a tela
+/* ---------- geometria ---------- */
 function frameBox() {
-  const vw = video.videoWidth, vh = video.videoHeight;
-  const sc = Math.max(W / vw, H / vh), dw = vw * sc, dh = vh * sc;
-  return {ox: (W - dw) / 2, oy: (H - dh) / 2, dw, dh};
+  const vw = video.videoWidth, vh = video.videoHeight, sc = Math.max(W / vw, H / vh);
+  return {ox: (W - vw * sc) / 2, oy: (H - vh * sc) / 2, dw: vw * sc, dh: vh * sc};
 }
-function toScreen(lm, b) {
-  const x = b.ox + lm.x * b.dw, y = b.oy + lm.y * b.dh;
-  return {x: mirror ? W - x : x, y};
-}
+function toScreen(lm, b) { const x = b.ox + lm.x * b.dw; return {x: mirror ? W - x : x, y: b.oy + lm.y * b.dh}; }
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const mid = (a, b) => ({x: (a.x + b.x) / 2, y: (a.y + b.y) / 2});
+// retorna posição (0..1) ao longo de q1-q2 onde p1-p2 cruza, ou null
+function crossAt(p1, p2, q1, q2) {
+  const d = (p2.x - p1.x) * (q2.y - q1.y) - (p2.y - p1.y) * (q2.x - q1.x);
+  if (!d) return null;
+  const t = ((q1.x - p1.x) * (q2.y - q1.y) - (q1.y - p1.y) * (q2.x - q1.x)) / d;
+  const u = ((q1.x - p1.x) * (p2.y - p1.y) - (q1.y - p1.y) * (p2.x - p1.x)) / d;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? u : null;
+}
 
-function boltPath(a, b) {
-  let pts = [a, b], d = dist(a, b) * .22;
-  for (let k = 0; k < 6; k++) {
+/* ---------- desenho ---------- */
+function strokePts(pts, color, w) {
+  ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
+}
+function glowLine(pts, hue, w, bright) {
+  strokePts(pts, `hsla(${hue},100%,60%,${.10 + .15 * bright})`, w * 8);
+  strokePts(pts, `hsla(${hue},100%,65%,${.25 + .4 * bright})`, w * 3);
+  strokePts(pts, `hsla(${hue},100%,${80 + 15 * bright}%,1)`, w);
+}
+function jagged(a, b, amt) {
+  let pts = [a, b], d = dist(a, b) * amt;
+  for (let k = 0; k < 5; k++) {
     const np = [pts[0]];
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p = pts[i], q = pts[i + 1];
-      np.push({x: (p.x + q.x) / 2 + (Math.random() - .5) * d, y: (p.y + q.y) / 2 + (Math.random() - .5) * d}, q);
-    }
+    for (let i = 0; i < pts.length - 1; i++) { const p = pts[i], q = pts[i + 1];
+      np.push({x: (p.x + q.x) / 2 + (Math.random() - .5) * d, y: (p.y + q.y) / 2 + (Math.random() - .5) * d}, q); }
     pts = np; d /= 2;
   }
   return pts;
 }
-function strokePts(pts, color, w) {
-  ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath();
-  pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
-  ctx.stroke();
+function endCap(p, nx, ny, hue) {
+  const L = 9 * dpr;
+  strokePts([{x: p.x - nx * L, y: p.y - ny * L}, {x: p.x + nx * L, y: p.y + ny * L}], `hsla(${hue},100%,90%,.9)`, 2 * dpr);
 }
-function bolt(a, b, hue, intensity = 1) {
-  const pts = boltPath(a, b), w = 2.2 * dpr * intensity;
-  strokePts(pts, `hsla(${hue},100%,60%,.12)`, w * 9);
-  strokePts(pts, `hsla(${hue},100%,65%,.35)`, w * 3.5);
-  strokePts(pts, `hsla(${hue},100%,93%,1)`, w);
-  if (Math.random() < .35) { // ramificação
-    const s = pts[(Math.random() * pts.length) | 0];
-    const len = dist(a, b) * .25;
-    const br = boltPath(s, {x: s.x + (Math.random() - .5) * len, y: s.y + (Math.random() - .5) * len});
-    strokePts(br, `hsla(${hue},100%,80%,.6)`, w * .7);
-  }
-  for (let i = 0; i < 2; i++) spawn(pts[(Math.random() * pts.length) | 0], hue, 1);
+function label(p, text, hue) {
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.font = `600 ${13 * dpr}px -apple-system,system-ui,sans-serif`;
+  ctx.fillStyle = `hsla(${hue},100%,85%,.95)`; ctx.fillText(text, p.x + 10 * dpr, p.y - 10 * dpr);
+  ctx.globalCompositeOperation = 'lighter';
 }
 function spawn(p, hue, n, power = 1) {
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, s = (1 + Math.random() * 4) * dpr * power;
     particles.push({x: p.x, y: p.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1, hue});
   }
-  if (particles.length > 600) particles.splice(0, particles.length - 600);
+  if (particles.length > 700) particles.splice(0, particles.length - 700);
 }
-function glowDot(p, r, color) {
-  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+function dot(p, r, color) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill(); }
+
+function drawString(s, now) {
+  const a = {x: s.ax * W, y: s.ay * H}, b = {x: s.bx * W, y: s.by * H};
+  const len = dist(a, b), nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+  const age = (now - s.hitT) / 1000, amp = s.amp * Math.exp(-age * 2.2);
+  const pts = [], N = 48;
+  const visF = Math.min(18, s.f / 25);                         // vibração visível (mais rápida nas agudas)
+  for (let i = 0; i <= N; i++) {
+    const t = i / N, off = amp * Math.sin(Math.PI * t) * Math.sin(age * visF * Math.PI * 2);
+    pts.push({x: a.x + (b.x - a.x) * t + nx * off, y: a.y + (b.y - a.y) * t + ny * off});
+  }
+  const bright = Math.min(1, amp / (12 * dpr));
+  glowLine(pts, s.hue, 1.6 * dpr, bright);
+  endCap(a, nx, ny, s.hue); endCap(b, nx, ny, s.hue);
+  if (bright > .3 && Math.random() < bright) spawn(pts[(Math.random() * N) | 0], s.hue, 1, .6);
 }
 
+/* ---------- lógica por frame ---------- */
 let fpsT = performance.now(), fpsN = 0;
 function loop(now) {
   requestAnimationFrame(loop);
   if (video.readyState < 2) return;
-  if (video.currentTime !== lastVT) {
-    lastVT = video.currentTime;
-    result = landmarker.detectForVideo(video, now);
-  }
+  if (video.currentTime !== lastVT) { lastVT = video.currentTime; result = landmarker.detectForVideo(video, now); }
   const b = frameBox();
 
-  // fundo: vídeo escurecido
   ctx.globalCompositeOperation = 'source-over';
   ctx.save();
   if (mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
@@ -182,65 +250,104 @@ function loop(now) {
   ctx.restore();
   ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, 0, W, H);
 
-  const hands = (result?.landmarks || []).map(h => h.map(l => toScreen(l, b)));
-
-  if (opt.skel) {
-    ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#3dff7a';
-    for (const h of hands) {
-      ctx.beginPath();
-      for (const c of HandLandmarker.HAND_CONNECTIONS) { ctx.moveTo(h[c.start].x, h[c.start].y); ctx.lineTo(h[c.end].x, h[c.end].y); }
-      ctx.stroke();
-      for (const p of h) glowDot(p, 3.5 * dpr, '#ff3048');
-    }
-  }
+  // mãos detectadas, com identidade estável (Left/Right)
+  const hands = (result?.landmarks || []).map((h, i) => {
+    const pts = h.map(l => toScreen(l, b));
+    const id = result.handedness?.[i]?.[0]?.categoryName || 'h' + i;
+    const st = hand[id] ||= {pinch: false, prev: null, trail: []};
+    const size = dist(pts[0], pts[9]), pd = dist(pts[4], pts[8]);
+    st.pinch = st.pinch ? pd < size * .45 : pd < size * .28;  // histerese evita "piscar"
+    st.pinchPt = mid(pts[4], pts[8]); st.size = size;
+    return {id, pts, st};
+  });
+  for (const id in hand) if (!hands.some(h => h.id === id)) { hand[id].pinch = false; hand[id].prev = null; hand[id].trail.length = 0; }
 
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = ctx.lineJoin = 'round';
 
-  // rastro do indicador
-  for (let i = 0; i < 2; i++) {
-    const t = trails[i];
-    if (hands[i]) t.push({...hands[i][8], t: now});
-    while (t.length && now - t[0].t > 700) t.shift();
-    if (opt.trail && t.length > 1) {
-      for (let j = 1; j < t.length; j++) {
-        const k = j / t.length;
-        ctx.strokeStyle = `hsla(${190 + 100 * i},100%,${60 + 30 * k}%,${k})`;
-        ctx.lineWidth = (2 + 10 * k) * dpr;
-        ctx.beginPath(); ctx.moveTo(t[j - 1].x, t[j - 1].y); ctx.lineTo(t[j].x, t[j].y); ctx.stroke();
-      }
+  // 1) esticar / fixar corda
+  const pinching = hands.filter(h => h.st.pinch);
+  if (pinching.length === 2) {
+    stretch = {a: pinching[0].st.pinchPt, b: pinching[1].st.pinchPt};
+  } else if (stretch) {
+    const len = dist(stretch.a, stretch.b);
+    if (len > 50 * dpr) {
+      const n = noteFor(len);
+      const s = {ax: stretch.a.x / W, ay: stretch.a.y / H, bx: stretch.b.x / W, by: stretch.b.y / H, ...n, hitT: now, amp: 10 * dpr};
+      strings.push(s); if (strings.length > 30) strings.shift();
+      playString(s, .6, 0);
+      spawn(stretch.a, n.hue, 14, 1.4); spawn(stretch.b, n.hue, 14, 1.4);
     }
-    if (!hands[i] && t.length) t.shift();
+    stretch = null;
   }
 
-  if (opt.bolt) {
-    if (hands.length >= 2) {
-      // duas mãos: dedo com dedo
-      const [h1, h2] = hands;
-      TIPS.forEach((tip, i) => bolt(h1[tip], h2[tip], HUES[i]));
-    }
-    for (const h of hands) {
-      // uma mão: polegar com dedos próximos
-      const size = dist(h[0], h[9]);
-      for (let i = 1; i < TIPS.length; i++) {
-        const d = dist(h[4], h[TIPS[i]]);
-        if (d < size * 1.1) bolt(h[4], h[TIPS[i]], HUES[i], .7);
-        if (d < size * .18) spawn(h[TIPS[i]], HUES[i], 6, 1.6); // pinça = faíscas
+  // 2) tocar: indicador (de mão que não está em pinça) cruzando uma corda
+  for (const h of hands) {
+    const tip = h.pts[8], st = h.st;
+    if (st.prev && !st.pinch && !stretch) {
+      const speed = dist(st.prev, tip);
+      for (const s of strings) {
+        const a = {x: s.ax * W, y: s.ay * H}, c = {x: s.bx * W, y: s.by * H};
+        const u = crossAt(st.prev, tip, a, c);
+        if (u !== null && now - s.hitT > 140) {
+          const vel = Math.min(1, speed / (40 * dpr));
+          s.hitT = now; s.amp = (6 + 14 * vel) * dpr * Math.sin(Math.PI * Math.max(.15, Math.min(.85, u)));
+          playString(s, vel, Math.max(-1, Math.min(1, (tip.x / W) * 2 - 1)));
+          spawn({x: a.x + (c.x - a.x) * u, y: a.y + (c.y - a.y) * u}, s.hue, 10, 1 + vel);
+        }
       }
-      for (const tip of TIPS) glowDot(h[tip], 7 * dpr, 'rgba(180,240,255,.35)');
+    }
+    st.prev = tip;
+    st.trail.push({...tip, t: now});
+    while (st.trail.length && now - st.trail[0].t > 600) st.trail.shift();
+  }
+
+  // 3) desenhar cordas fixas
+  for (const s of strings) drawString(s, now);
+
+  // 4) corda sendo esticada (elétrica) + nota prevista
+  if (stretch) {
+    const n = noteFor(dist(stretch.a, stretch.b));
+    glowLine(jagged(stretch.a, stretch.b, .06), n.hue, 2 * dpr, 1);
+    dot(stretch.a, 8 * dpr, `hsla(${n.hue},100%,80%,.8)`); dot(stretch.b, 8 * dpr, `hsla(${n.hue},100%,80%,.8)`);
+    label(mid(stretch.a, stretch.b), n.name, n.hue);
+    if (Math.random() < .5) spawn(Math.random() < .5 ? stretch.a : stretch.b, n.hue, 1, .8);
+  }
+
+  // 5) rastro do indicador
+  if (opt.trail) for (const h of hands) {
+    const t = h.st.trail;
+    for (let j = 1; j < t.length; j++) {
+      const k = j / t.length;
+      ctx.strokeStyle = `hsla(190,100%,${60 + 30 * k}%,${k * .8})`; ctx.lineWidth = (2 + 8 * k) * dpr;
+      ctx.beginPath(); ctx.moveTo(t[j - 1].x, t[j - 1].y); ctx.lineTo(t[j].x, t[j].y); ctx.stroke();
     }
   }
 
-  // partículas
+  // 6) esqueleto
+  if (opt.skel) {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#3dff7a';
+    for (const {pts, st} of hands) {
+      ctx.beginPath();
+      for (const c of HandLandmarker.HAND_CONNECTIONS) { ctx.moveTo(pts[c.start].x, pts[c.start].y); ctx.lineTo(pts[c.end].x, pts[c.end].y); }
+      ctx.stroke();
+      for (const p of pts) dot(p, 3.5 * dpr, '#ff3048');
+      if (st.pinch) dot(st.pinchPt, 6 * dpr, '#fff');
+    }
+    ctx.globalCompositeOperation = 'lighter';
+  }
+
+  // 7) partículas
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
     p.x += p.vx; p.y += p.vy; p.vy += .12 * dpr; p.vx *= .97; p.life -= .03;
     if (p.life <= 0) { particles.splice(i, 1); continue; }
-    glowDot(p, (1 + 2 * p.life) * dpr, `hsla(${p.hue},100%,${70 + 25 * p.life}%,${p.life})`);
+    dot(p, (1 + 2 * p.life) * dpr, `hsla(${p.hue},100%,${70 + 25 * p.life}%,${p.life})`);
   }
 
   fpsN++;
-  if (now - fpsT > 1000) { $('#hud').textContent = `${fpsN} fps · ${hands.length} mão(s)`; fpsN = 0; fpsT = now; }
+  if (now - fpsT > 1000) { $('#hud').textContent = `${fpsN} fps · ${hands.length} mão(s) · ${strings.length} corda(s)`; fpsN = 0; fpsT = now; }
 }
 </script>
 </body>
