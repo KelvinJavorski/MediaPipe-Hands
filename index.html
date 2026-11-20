@@ -7,7 +7,10 @@
 <title>Harpa de Ar</title>
 <style>
 html,body{margin:0;height:100%;background:#000;color:#fff;font:15px/1.4 -apple-system,system-ui,sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
-video{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+/* o vídeo é exibido pelo próprio navegador (compositor/GPU), não redesenhado no canvas a cada frame */
+video{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+video.mirror{transform:scaleX(-1)}
+#shade{position:fixed;inset:0;background:rgba(0,0,0,.35);pointer-events:none}
 canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
 #ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;
   padding:16px max(12px,env(safe-area-inset-right)) calc(14px + env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
@@ -26,6 +29,7 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
 </head>
 <body>
 <video id="v" playsinline muted autoplay></video>
+<div id="shade"></div>
 <canvas id="c"></canvas>
 <div id="hud"></div>
 
@@ -34,13 +38,15 @@ button.on{background:#8fe3ff;color:#001018;border-color:#8fe3ff}
   <ol>
     <li>Faça pinça (polegar + indicador) com as <b>duas mãos</b> e afaste-as: uma corda estica entre elas.</li>
     <li>Solte a pinça: a corda <b>fica presa</b> onde você deixou.</li>
-    <li>Passe o indicador pela corda para tocar. Corda longa = grave, curta = agudo.</li>
+    <li>Passe o indicador pela corda para tocar. Quanto mais rápido, mais forte. Corda longa = grave, curta = agudo.</li>
+    <li>Faça pinça <b>em cima da ponta</b> de uma corda para agarrá-la e mudar o comprimento, enquanto a outra mão toca. Encolha até sumir para apagar.</li>
   </ol>
   <button id="start">Iniciar câmera e som</button>
   <p id="msg">No iPhone, desligue o modo silencioso para ouvir.</p>
 </div>
 
 <div id="ui" hidden>
+  <button id="bTimbre" class="on">Timbre: Synth</button>
   <button id="bSkel" class="on">Esqueleto</button>
   <button id="bTrail" class="on">Rastro</button>
   <button id="bSound" class="on">Som</button>
@@ -55,54 +61,104 @@ import {FilesetResolver, HandLandmarker} from "https://cdn.jsdelivr.net/npm/@med
 const $ = s => document.querySelector(s);
 const video = $('#v'), cv = $('#c'), ctx = cv.getContext('2d');
 const msg = t => { $('#msg').textContent = t; };
-const opt = {skel: true, trail: true, sound: true};
+const opt = {skel: true, trail: true, sound: true, synth: true};
 let landmarker, stream, devices = [], devIdx = -1, mirror = true;
 let W = 0, H = 0, dpr = 1, lastVT = -1, result = null;
 const particles = [], strings = [];
-const hand = {};            // estado por mão (Left/Right): pinça, posição anterior, rastro
+const hand = {};            // estado por mão (Left/Right): pinça, ponta agarrada, posição anterior, rastro
 let stretch = null;         // corda sendo esticada {a,b}
+const MAX_PARTICLES = 300;
 
 if (!window.isSecureContext) msg('A câmera só funciona via https:// ou localhost.');
 
 function resize() {
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  dpr = Math.min(window.devicePixelRatio || 1, 1.5);
   W = cv.width = Math.round(innerWidth * dpr);
   H = cv.height = Math.round(innerHeight * dpr);
 }
 addEventListener('resize', resize); resize();
 
-/* ---------- som: corda dedilhada (Karplus-Strong) ---------- */
+/* ---------- som ---------- */
 let ac, master;
+const voices = [];          // vozes tocando: {s, end, set(f), kill(t)}
+const MAX_VOICES = 10;
 const bufCache = new Map();
 function initAudio() {
   ac = new (window.AudioContext || window.webkitAudioContext)();
-  master = ac.createDynamicsCompressor(); master.connect(ac.destination);
+  const comp = ac.createDynamicsCompressor(); comp.connect(ac.destination);
+  master = ac.createGain(); master.gain.value = .8; master.connect(comp);
+  // delay com realimentação filtrada: o "eco" eletrônico
+  const dl = ac.createDelay(1), fb = ac.createGain(), lp = ac.createBiquadFilter(), wet = ac.createGain();
+  dl.delayTime.value = .27; fb.gain.value = .38; lp.type = 'lowpass'; lp.frequency.value = 2400; wet.gain.value = .35;
+  master.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); lp.connect(wet); wet.connect(comp);
   const o = ac.createOscillator(), g = ac.createGain(); g.gain.value = 0; // "destrava" o áudio no iOS
   o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + .05);
 }
+const stopAt = (o, t) => { try { o.stop(t); } catch (e) {} };
+
+// synth: 2 serras desafinadas + sub quadrada, filtro ressonante com envelope.
+// Batida forte = tom começa mais alto e "volta" (corda esticada), filtro mais aberto, mais volume.
+function synthVoice(f, vel, t, out) {
+  const ratios = [1, 1, .5], oscs = ratios.map(() => ac.createOscillator());
+  oscs[0].type = oscs[1].type = 'sawtooth'; oscs[2].type = 'square';
+  oscs[0].detune.value = -9; oscs[1].detune.value = 9;
+  const flt = ac.createBiquadFilter(), amp = ac.createGain(), sub = ac.createGain();
+  flt.type = 'lowpass'; flt.Q.value = 6 + 6 * vel; sub.gain.value = .35;
+  oscs[0].connect(flt); oscs[1].connect(flt); oscs[2].connect(sub); sub.connect(flt);
+  flt.connect(amp); amp.connect(out);
+  const bend = 2 ** (2 * vel / 12), dur = 1.8 + vel;
+  oscs.forEach((o, i) => {
+    o.frequency.setValueAtTime(f * ratios[i] * bend, t);
+    o.frequency.setTargetAtTime(f * ratios[i], t + .01, .08);
+    o.start(t); stopAt(o, t + dur);
+  });
+  flt.frequency.setValueAtTime(Math.min(16000, f * (3 + 14 * vel)), t);
+  flt.frequency.setTargetAtTime(f * 1.2 + 150, t + .01, .18 + .25 * vel);
+  amp.gain.setValueAtTime(0, t);
+  amp.gain.linearRampToValueAtTime(.12 + .22 * vel, t + .006);
+  amp.gain.setTargetAtTime(0, t + .02, .25 + .35 * vel);
+  return {end: t + dur,
+    set(nf) { const n = ac.currentTime; oscs.forEach((o, i) => o.frequency.setTargetAtTime(nf * ratios[i], n, .03)); },
+    kill(n) { oscs.forEach(o => stopAt(o, n + .1)); }};
+}
+// harpa: Karplus-Strong (buffer cacheado), com glide via playbackRate
 function pluckBuffer(f) {
   const key = Math.round(f * 10);
   if (bufCache.has(key)) return bufCache.get(key);
   const sr = ac.sampleRate, N = Math.max(2, Math.round(sr / f)), len = Math.round(sr * 2.5);
   const buf = ac.createBuffer(1, len, sr), d = buf.getChannelData(0), ring = new Float32Array(N);
   for (let i = 0; i < N; i++) ring[i] = Math.random() * 2 - 1;
-  const decay = .996;
   for (let i = 0, p = 0; i < len; i++) {
     const n = (p + 1) % N, v = ring[p];
-    d[i] = v; ring[p] = decay * .5 * (v + ring[n]); p = n;
+    d[i] = v; ring[p] = .996 * .5 * (v + ring[n]); p = n;
   }
   bufCache.set(key, buf); return buf;
+}
+function pluckVoice(f, vel, t, out) {
+  const src = ac.createBufferSource(), g = ac.createGain();
+  src.buffer = pluckBuffer(f); g.gain.value = .25 + .5 * vel;
+  src.connect(g); g.connect(out);
+  src.playbackRate.setValueAtTime(2 ** (vel / 12), t);
+  src.playbackRate.setTargetAtTime(1, t + .01, .06);
+  src.start(t);
+  return {end: t + 2.5,
+    set(nf) { src.playbackRate.setTargetAtTime(nf / f, ac.currentTime, .03); },
+    kill(n) { stopAt(src, n + .1); }};
 }
 function playString(s, vel, pan) {
   if (!opt.sound || !ac) return;
   if (ac.state !== 'running') ac.resume();
-  const src = ac.createBufferSource(), g = ac.createGain();
-  src.buffer = pluckBuffer(s.f);
-  g.gain.value = .25 + .5 * vel;
-  let node = src.connect(g);
-  if (ac.createStereoPanner) { const p = ac.createStereoPanner(); p.pan.value = pan; node = node.connect(p); }
-  node.connect(master); src.start();
+  const t = ac.currentTime, out = ac.createGain();
+  let node = out;
+  if (ac.createStereoPanner) { const p = ac.createStereoPanner(); p.pan.value = pan; out.connect(p); node = p; }
+  node.connect(master);
+  const v = (opt.synth ? synthVoice : pluckVoice)(s.f, vel, t, out);
+  v.s = s; v.out = out; voices.push(v);
+  for (let i = voices.length - 1; i >= 0; i--) if (voices[i].end < t) voices.splice(i, 1);
+  while (voices.length > MAX_VOICES) { const o = voices.shift(); o.out.gain.setTargetAtTime(0, t, .015); o.kill(t); }
 }
+// a corda mudou de nota (comprimento ajustado): as vozes que estão soando deslizam para a nova nota
+function retune(s) { for (const v of voices) if (v.s === s) v.set(s.f); }
 
 /* ---------- comprimento -> nota (escala pentatônica) ---------- */
 const NAMES = ['Dó', 'Dó#', 'Ré', 'Ré#', 'Mi', 'Fá', 'Fá#', 'Sol', 'Sol#', 'Lá', 'Lá#', 'Si'];
@@ -129,10 +185,13 @@ async function loadModel() {
 async function openCamera(deviceId) {
   if (stream) stream.getTracks().forEach(t => t.stop());
   const vc = deviceId ? {deviceId: {exact: deviceId}} : {facingMode: 'user'};
-  stream = await navigator.mediaDevices.getUserMedia({audio: false, video: {...vc, width: {ideal: 1280}, height: {ideal: 720}}});
+  // resolução baixa basta: o modelo reduz a imagem para ~224px; menos pixels = detecção mais rápida
+  stream = await navigator.mediaDevices.getUserMedia({audio: false,
+    video: {...vc, width: {ideal: 640}, height: {ideal: 480}, frameRate: {ideal: 30}}});
   video.srcObject = stream; await video.play();
   const s = stream.getVideoTracks()[0].getSettings();
   mirror = s.facingMode ? s.facingMode === 'user' : true;
+  video.classList.toggle('mirror', mirror);
   devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
   devIdx = Math.max(0, devices.findIndex(d => d.deviceId === s.deviceId));
   lastVT = -1;
@@ -155,6 +214,7 @@ $('#start').onclick = async () => {
 };
 const toggle = (id, key) => $(id).onclick = () => { opt[key] = !opt[key]; $(id).classList.toggle('on', opt[key]); };
 toggle('#bSkel', 'skel'); toggle('#bTrail', 'trail'); toggle('#bSound', 'sound');
+$('#bTimbre').onclick = () => { opt.synth = !opt.synth; $('#bTimbre').textContent = 'Timbre: ' + (opt.synth ? 'Synth' : 'Harpa'); };
 $('#bUndo').onclick = () => strings.pop();
 $('#bClear').onclick = () => { strings.length = 0; };
 $('#bCam').onclick = async () => {
@@ -164,6 +224,7 @@ $('#bCam').onclick = async () => {
 };
 
 /* ---------- geometria ---------- */
+// mesmo mapeamento do "object-fit: cover" do <video> na tela
 function frameBox() {
   const vw = video.videoWidth, vh = video.videoHeight, sc = Math.max(W / vw, H / vh);
   return {ox: (W - vw * sc) / 2, oy: (H - vh * sc) / 2, dw: vw * sc, dh: vh * sc};
@@ -171,6 +232,7 @@ function frameBox() {
 function toScreen(lm, b) { const x = b.ox + lm.x * b.dw; return {x: mirror ? W - x : x, y: b.oy + lm.y * b.dh}; }
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const mid = (a, b) => ({x: (a.x + b.x) / 2, y: (a.y + b.y) / 2});
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 // retorna posição (0..1) ao longo de q1-q2 onde p1-p2 cruza, ou null
 function crossAt(p1, p2, q1, q2) {
   const d = (p2.x - p1.x) * (q2.y - q1.y) - (p2.y - p1.y) * (q2.x - q1.x);
@@ -179,11 +241,32 @@ function crossAt(p1, p2, q1, q2) {
   const u = ((q1.x - p1.x) * (p2.y - p1.y) - (q1.y - p1.y) * (p2.x - p1.x)) / d;
   return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? u : null;
 }
+const endPt = (s, e) => ({x: s[e + 'x'] * W, y: s[e + 'y'] * H});      // e = 'a' | 'b'
+const strLen = s => Math.hypot((s.bx - s.ax) * W, (s.by - s.ay) * H);
+const grabR = st => Math.max(40 * dpr, st.size * .6);
+// ponta de corda mais próxima de p (dentro do raio r), ignorando as já agarradas
+function nearestEnd(p, r, hands) {
+  let best = null;
+  for (const s of strings) for (const e of ['a', 'b']) {
+    if (hands.some(h => h.st.grab && h.st.grab.s === s && h.st.grab.e === e)) continue;
+    const d = dist(p, endPt(s, e));
+    if (d < r) { r = d; best = {s, e}; }
+  }
+  return best;
+}
+function moveEnd(g, p) {
+  const s = g.s;
+  s[g.e + 'x'] = p.x / W; s[g.e + 'y'] = p.y / H;
+  const n = noteFor(strLen(s));
+  if (n.f !== s.f) { Object.assign(s, n); retune(s); }
+}
 
 /* ---------- desenho ---------- */
 function strokePts(pts, color, w) {
   ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath();
-  pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.stroke();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
 }
 function glowLine(pts, hue, w, bright) {
   strokePts(pts, `hsla(${hue},100%,60%,${.10 + .15 * bright})`, w * 8);
@@ -204,6 +287,9 @@ function endCap(p, nx, ny, hue) {
   const L = 9 * dpr;
   strokePts([{x: p.x - nx * L, y: p.y - ny * L}, {x: p.x + nx * L, y: p.y + ny * L}], `hsla(${hue},100%,90%,.9)`, 2 * dpr);
 }
+function ring(p, r, color) {
+  ctx.strokeStyle = color; ctx.lineWidth = 2 * dpr; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke();
+}
 function label(p, text, hue) {
   ctx.globalCompositeOperation = 'source-over';
   ctx.font = `600 ${13 * dpr}px -apple-system,system-ui,sans-serif`;
@@ -215,65 +301,94 @@ function spawn(p, hue, n, power = 1) {
     const a = Math.random() * Math.PI * 2, s = (1 + Math.random() * 4) * dpr * power;
     particles.push({x: p.x, y: p.y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 1, hue});
   }
-  if (particles.length > 700) particles.splice(0, particles.length - 700);
+  if (particles.length > MAX_PARTICLES) particles.splice(0, particles.length - MAX_PARTICLES);
 }
 function dot(p, r, color) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill(); }
 
+// Ao ser tocada a corda começa "puxada" em V no ponto do toque, na direção do dedo
+// (amplitude pela força), e vai virando uma vibração senoidal que decai.
 function drawString(s, now) {
-  const a = {x: s.ax * W, y: s.ay * H}, b = {x: s.bx * W, y: s.by * H};
-  const len = dist(a, b), nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+  const a = endPt(s, 'a'), b = endPt(s, 'b');
+  const len = dist(a, b) || 1, nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
   const age = (now - s.hitT) / 1000, amp = s.amp * Math.exp(-age * 2.2);
-  const pts = [], N = 48;
-  const visF = Math.min(18, s.f / 25);                         // vibração visível (mais rápida nas agudas)
-  for (let i = 0; i <= N; i++) {
-    const t = i / N, off = amp * Math.sin(Math.PI * t) * Math.sin(age * visF * Math.PI * 2);
-    pts.push({x: a.x + (b.x - a.x) * t + nx * off, y: a.y + (b.y - a.y) * t + ny * off});
+  let pts = [a, b];
+  if (amp > .4 * dpr) {
+    pts = [];
+    const N = 32, u = s.u, w = Math.min(1, age * 6);
+    const osc = amp * s.dir * Math.cos(age * Math.min(14, s.f / 25) * Math.PI * 2);
+    for (let i = 0; i <= N; i++) {
+      const t = i / N, tri = t < u ? t / u : (1 - t) / (1 - u);
+      const off = osc * (tri * (1 - w) + Math.sin(Math.PI * t) * w);
+      pts.push({x: a.x + (b.x - a.x) * t + nx * off, y: a.y + (b.y - a.y) * t + ny * off});
+    }
   }
   const bright = Math.min(1, amp / (12 * dpr));
   glowLine(pts, s.hue, 1.6 * dpr, bright);
   endCap(a, nx, ny, s.hue); endCap(b, nx, ny, s.hue);
-  if (bright > .3 && Math.random() < bright) spawn(pts[(Math.random() * N) | 0], s.hue, 1, .6);
+  if (bright > .3 && Math.random() < bright) spawn(pts[(Math.random() * pts.length) | 0], s.hue, 1, .6);
 }
 
 /* ---------- lógica por frame ---------- */
-let fpsT = performance.now(), fpsN = 0;
+let fpsT = performance.now(), fpsN = 0, detMs = 0;
 function loop(now) {
   requestAnimationFrame(loop);
   if (video.readyState < 2) return;
-  if (video.currentTime !== lastVT) { lastVT = video.currentTime; result = landmarker.detectForVideo(video, now); }
+  let fresh = false;                                             // chegou frame novo da câmera?
+  if (video.currentTime !== lastVT) {
+    lastVT = video.currentTime;
+    const t0 = performance.now();
+    result = landmarker.detectForVideo(video, now);
+    detMs = detMs * .9 + (performance.now() - t0) * .1;
+    fresh = true;
+  }
   const b = frameBox();
-
   ctx.globalCompositeOperation = 'source-over';
-  ctx.save();
-  if (mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
-  ctx.drawImage(video, b.ox, b.oy, b.dw, b.dh);
-  ctx.restore();
-  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, 0, W, H);
+  ctx.clearRect(0, 0, W, H);
 
   // mãos detectadas, com identidade estável (Left/Right)
   const hands = (result?.landmarks || []).map((h, i) => {
     const pts = h.map(l => toScreen(l, b));
     const id = result.handedness?.[i]?.[0]?.categoryName || 'h' + i;
-    const st = hand[id] ||= {pinch: false, prev: null, trail: []};
+    const st = hand[id] ||= {pinch: false, wasPinch: false, grab: null, prev: null, prevT: 0, trail: []};
     const size = dist(pts[0], pts[9]), pd = dist(pts[4], pts[8]);
     st.pinch = st.pinch ? pd < size * .45 : pd < size * .28;  // histerese evita "piscar"
     st.pinchPt = mid(pts[4], pts[8]); st.size = size;
     return {id, pts, st};
   });
-  for (const id in hand) if (!hands.some(h => h.id === id)) { hand[id].pinch = false; hand[id].prev = null; hand[id].trail.length = 0; }
+  for (const id in hand) if (!hands.some(h => h.id === id)) {
+    const st = hand[id]; st.pinch = st.wasPinch = false; st.grab = null; st.prev = null; st.trail.length = 0;
+  }
 
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = ctx.lineJoin = 'round';
 
-  // 1) esticar / fixar corda
-  const pinching = hands.filter(h => h.st.pinch);
-  if (pinching.length === 2) {
-    stretch = {a: pinching[0].st.pinchPt, b: pinching[1].st.pinchPt};
+  // 1) agarrar / mover / soltar a ponta de uma corda (pinça que começa em cima da ponta)
+  for (const h of hands) {
+    const st = h.st;
+    if (st.grab && !strings.includes(st.grab.s)) st.grab = null;  // apagada por Desfazer/Limpar
+    if (st.pinch && !st.wasPinch) st.grab = nearestEnd(st.pinchPt, grabR(st), hands);
+    if (!st.pinch && st.grab) {
+      const s = st.grab.s, held = hands.some(o => o !== h && o.st.grab && o.st.grab.s === s);
+      if (!held && strLen(s) < 50 * dpr) {                       // encolheu demais: apaga
+        strings.splice(strings.indexOf(s), 1);
+        spawn(endPt(s, 'a'), s.hue, 20, 1.6);
+      } else spawn(st.pinchPt, s.hue, 6, .8);
+      st.grab = null;
+    }
+    st.wasPinch = st.pinch;
+    if (st.grab) moveEnd(st.grab, st.pinchPt);
+  }
+
+  // 2) esticar / fixar corda nova (duas pinças "livres", sem nada agarrado)
+  const free = hands.filter(h => h.st.pinch && !h.st.grab);
+  if (free.length === 2) {
+    stretch = {a: free[0].st.pinchPt, b: free[1].st.pinchPt};
   } else if (stretch) {
     const len = dist(stretch.a, stretch.b);
     if (len > 50 * dpr) {
       const n = noteFor(len);
-      const s = {ax: stretch.a.x / W, ay: stretch.a.y / H, bx: stretch.b.x / W, by: stretch.b.y / H, ...n, hitT: now, amp: 10 * dpr};
+      const s = {ax: stretch.a.x / W, ay: stretch.a.y / H, bx: stretch.b.x / W, by: stretch.b.y / H, ...n,
+        hitT: now, amp: 10 * dpr, u: .5, dir: 1};
       strings.push(s); if (strings.length > 30) strings.shift();
       playString(s, .6, 0);
       spawn(stretch.a, n.hue, 14, 1.4); spawn(stretch.b, n.hue, 14, 1.4);
@@ -281,31 +396,47 @@ function loop(now) {
     stretch = null;
   }
 
-  // 2) tocar: indicador (de mão que não está em pinça) cruzando uma corda
+  // 3) tocar: indicador de mão que não está em pinça cruzando uma corda (inclusive a que a outra mão segura)
   for (const h of hands) {
     const tip = h.pts[8], st = h.st;
-    if (st.prev && !st.pinch && !stretch) {
-      const speed = dist(st.prev, tip);
-      for (const s of strings) {
-        const a = {x: s.ax * W, y: s.ay * H}, c = {x: s.bx * W, y: s.by * H};
-        const u = crossAt(st.prev, tip, a, c);
-        if (u !== null && now - s.hitT > 140) {
-          const vel = Math.min(1, speed / (40 * dpr));
-          s.hitT = now; s.amp = (6 + 14 * vel) * dpr * Math.sin(Math.PI * Math.max(.15, Math.min(.85, u)));
-          playString(s, vel, Math.max(-1, Math.min(1, (tip.x / W) * 2 - 1)));
-          spawn({x: a.x + (c.x - a.x) * u, y: a.y + (c.y - a.y) * u}, s.hue, 10, 1 + vel);
+    if (fresh) {
+      if (st.prev && !st.pinch) {
+        const mx = tip.x - st.prev.x, my = tip.y - st.prev.y;
+        const dt = Math.max(16, now - st.prevT);
+        const vel = Math.min(1, Math.hypot(mx, my) * (33 / dt) / (40 * dpr));   // velocidade normalizada a ~30fps
+        for (const s of strings) {
+          const a = endPt(s, 'a'), c = endPt(s, 'b');
+          const u = crossAt(st.prev, tip, a, c);
+          if (u !== null && now - s.hitT > 140) {
+            const len = dist(a, c) || 1, nx = -(c.y - a.y) / len, ny = (c.x - a.x) / len;
+            s.hitT = now; s.u = clamp(u, .12, .88); s.dir = Math.sign(mx * nx + my * ny) || 1;
+            s.amp = (5 + 25 * vel) * dpr;
+            playString(s, vel, clamp((tip.x / W) * 2 - 1, -1, 1));
+            spawn({x: a.x + (c.x - a.x) * u, y: a.y + (c.y - a.y) * u}, s.hue, 6 + 10 * vel, 1 + vel);
+          }
         }
       }
+      st.prev = tip; st.prevT = now;
+      st.trail.push({x: tip.x, y: tip.y, t: now});
     }
-    st.prev = tip;
-    st.trail.push({...tip, t: now});
     while (st.trail.length && now - st.trail[0].t > 600) st.trail.shift();
   }
 
-  // 3) desenhar cordas fixas
+  // 4) cordas fixas + pontas agarradas / agarráveis
   for (const s of strings) drawString(s, now);
+  for (const h of hands) {
+    const st = h.st;
+    if (st.grab) {
+      const s = st.grab.s, p = endPt(s, st.grab.e);
+      dot(p, 7 * dpr, `hsla(${s.hue},100%,80%,.9)`); ring(p, grabR(st) * .6, `hsla(${s.hue},100%,75%,.7)`);
+      label(mid(endPt(s, 'a'), endPt(s, 'b')), s.name, s.hue);
+    } else if (!st.pinch) {
+      const e = nearestEnd(st.pinchPt, grabR(st), hands);
+      if (e) ring(endPt(e.s, e.e), 12 * dpr, `hsla(${e.s.hue},100%,80%,.6)`);
+    }
+  }
 
-  // 4) corda sendo esticada (elétrica) + nota prevista
+  // 5) corda sendo esticada (elétrica) + nota prevista
   if (stretch) {
     const n = noteFor(dist(stretch.a, stretch.b));
     glowLine(jagged(stretch.a, stretch.b, .06), n.hue, 2 * dpr, 1);
@@ -314,7 +445,7 @@ function loop(now) {
     if (Math.random() < .5) spawn(Math.random() < .5 ? stretch.a : stretch.b, n.hue, 1, .8);
   }
 
-  // 5) rastro do indicador
+  // 6) rastro do indicador
   if (opt.trail) for (const h of hands) {
     const t = h.st.trail;
     for (let j = 1; j < t.length; j++) {
@@ -324,21 +455,24 @@ function loop(now) {
     }
   }
 
-  // 6) esqueleto
+  // 7) esqueleto (linhas num único path, pontos num único path)
   if (opt.skel) {
     ctx.globalCompositeOperation = 'source-over';
     ctx.lineWidth = 2 * dpr; ctx.strokeStyle = '#3dff7a';
+    const r = 3.5 * dpr;
     for (const {pts, st} of hands) {
       ctx.beginPath();
       for (const c of HandLandmarker.HAND_CONNECTIONS) { ctx.moveTo(pts[c.start].x, pts[c.start].y); ctx.lineTo(pts[c.end].x, pts[c.end].y); }
       ctx.stroke();
-      for (const p of pts) dot(p, 3.5 * dpr, '#ff3048');
+      ctx.fillStyle = '#ff3048'; ctx.beginPath();
+      for (const p of pts) { ctx.moveTo(p.x + r, p.y); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); }
+      ctx.fill();
       if (st.pinch) dot(st.pinchPt, 6 * dpr, '#fff');
     }
     ctx.globalCompositeOperation = 'lighter';
   }
 
-  // 7) partículas
+  // 8) partículas
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
     p.x += p.vx; p.y += p.vy; p.vy += .12 * dpr; p.vx *= .97; p.life -= .03;
@@ -347,7 +481,10 @@ function loop(now) {
   }
 
   fpsN++;
-  if (now - fpsT > 1000) { $('#hud').textContent = `${fpsN} fps · ${hands.length} mão(s) · ${strings.length} corda(s)`; fpsN = 0; fpsT = now; }
+  if (now - fpsT > 1000) {
+    $('#hud').textContent = `${fpsN} fps · detecção ${detMs.toFixed(0)} ms · ${hands.length} mão(s) · ${strings.length} corda(s)`;
+    fpsN = 0; fpsT = now;
+  }
 }
 </script>
 </body>

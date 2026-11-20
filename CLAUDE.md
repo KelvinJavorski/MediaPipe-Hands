@@ -27,28 +27,29 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 
 Ordem das seções no `<script type="module">`:
 
-1. **Estado global**: `opt` (toggles), `strings[]` (cordas fixas), `particles[]`, `hand{}` (estado por mão), `stretch` (corda sendo esticada).
-2. **Áudio**: `initAudio()` cria o `AudioContext` (precisa ser chamado dentro do clique do botão Iniciar, exigência do iOS), `pluckBuffer(f)` gera e cacheia o buffer Karplus-Strong por frequência, `playString(s, vel, pan)` toca com volume pela velocidade do dedo e pan pela posição X.
+1. **Estado global**: `opt` (toggles, inclusive `synth`), `strings[]` (cordas fixas), `particles[]`, `hand{}` (estado por mão: pinça, `grab`, posição anterior, rastro), `stretch` (corda sendo esticada).
+2. **Áudio**: `initAudio()` cria o `AudioContext` (precisa ser chamado dentro do clique do botão Iniciar, exigência do iOS) e a cadeia `master → delay com realimentação filtrada → compressor`. Dois timbres (botão "Timbre"): `synthVoice` (2 serras desafinadas + sub quadrada, lowpass ressonante com envelope) e `pluckVoice` (Karplus-Strong via `pluckBuffer`, cacheado). `playString(s, vel, pan)`: a velocidade do dedo controla volume, abertura do filtro e um *pitch bend* inicial que volta à nota (efeito de corda esticada). Vozes ativas ficam em `voices[]` (máx. 10); `retune(s)` faz as vozes de uma corda deslizarem para a nova nota quando o comprimento muda.
 3. **Nota**: `noteFor(lenPx)` → `{f, name, hue}`. Comprimento relativo à diagonal da tela, mapeado em log (física de corda: f ∝ 1/L) para 3 oitavas (Dó2 a Dó5), quantizado na pentatônica maior (`PENTA`).
-4. **MediaPipe + câmera**: `loadModel()` tenta delegate GPU e cai para CPU. `openCamera(deviceId?)` abre a câmera, detecta `facingMode` para decidir espelhamento, lista dispositivos para o botão "Trocar câmera".
-5. **Geometria**: `frameBox()` faz o mapeamento "object-fit: cover" do vídeo na tela; `toScreen()` converte landmark normalizado → pixel do canvas (com espelho). `crossAt()` = interseção de segmentos, retorna a posição 0..1 ao longo da corda.
-6. **Desenho**: `glowLine()` (3 traços sobrepostos com `globalCompositeOperation='lighter'` em vez de `shadowBlur`, que é lento no iOS), `jagged()` (raio por deslocamento de ponto médio), `drawString()` (onda estacionária `sin(πt)` com amplitude decaindo), `spawn()` partículas.
+4. **MediaPipe + câmera**: `loadModel()` tenta delegate GPU e cai para CPU. `openCamera(deviceId?)` abre a câmera em 640×480 (o modelo reduz para ~224 px de qualquer forma), detecta `facingMode` para decidir espelhamento (classe `.mirror` no `<video>`), lista dispositivos para o botão "Trocar câmera".
+5. **Geometria**: `frameBox()` reproduz o "object-fit: cover" do `<video>`; `toScreen()` converte landmark normalizado → pixel do canvas (com espelho). `crossAt()` = interseção de segmentos, retorna a posição 0..1 ao longo da corda. `endPt`, `strLen`, `nearestEnd` (ponta mais próxima não agarrada), `moveEnd` (move a ponta e recalcula a nota).
+6. **Desenho**: `glowLine()` (3 traços sobrepostos com `globalCompositeOperation='lighter'` em vez de `shadowBlur`, que é lento no iOS), `jagged()` (raio por deslocamento de ponto médio), `drawString()` (ao ser tocada começa em V no ponto do toque, na direção do dedo, e vira onda `sin(πt)` decaindo; parada = só 2 pontos), `spawn()` partículas.
 7. **`loop()`** por frame:
-   1. detecta mãos só quando `video.currentTime` muda;
-   2. desenha vídeo escurecido;
+   1. detecta mãos só quando `video.currentTime` muda (`fresh`); mede o tempo da detecção para o HUD;
+   2. `clearRect` no canvas (o vídeo é exibido pelo próprio `<video>` + `#shade` por CSS, não redesenhado);
    3. atualiza estado de cada mão (identidade estável por `handedness` Left/Right);
-   4. **esticar/fixar**: duas mãos em pinça → `stretch`; quando uma solta → vira corda fixa (mínimo 50px);
-   5. **tocar**: segmento (posição anterior → atual) do indicador cruzando uma corda, com cooldown;
-   6. desenha cordas, corda em esticamento + rótulo da nota, rastro, esqueleto, partículas;
-   7. HUD de fps.
+   4. **agarrar**: pinça que *começa* perto de uma ponta (`grabR`) agarra essa ponta e a move; ao soltar, se ficou < 50px, apaga a corda;
+   5. **esticar/fixar**: duas pinças livres (sem `grab`) → `stretch`; quando uma solta → vira corda fixa (mínimo 50px);
+   6. **tocar** (só em frame `fresh`): segmento anterior → atual do indicador de mão sem pinça cruzando uma corda, com cooldown; velocidade normalizada por tempo;
+   7. desenha cordas, pontas agarradas/agarráveis, corda em esticamento + nota, rastro, esqueleto, partículas;
+   8. HUD: fps, ms de detecção, mãos, cordas.
 
 ### Convenções importantes
 
-- Coordenadas das cordas são guardadas **normalizadas** (`ax, ay, bx, by` em 0..1 da tela) para sobreviver a resize/rotação. Converter com `* W` / `* H` ao desenhar.
-- Tudo que é tamanho em pixel é multiplicado por `dpr` (cap em 2).
+- Coordenadas das cordas são guardadas **normalizadas** (`ax, ay, bx, by` em 0..1 da tela) para sobreviver a resize/rotação. Converter com `endPt(s, 'a'|'b')`.
+- Tudo que é tamanho em pixel é multiplicado por `dpr` (cap em 1.5, por desempenho).
 - Landmarks MediaPipe usados: `0` pulso, `4` ponta do polegar, `8` ponta do indicador, `9` base do dedo médio (`dist(0,9)` = escala da mão).
 - `HandLandmarker.HAND_CONNECTIONS` é array de `{start, end}`.
-- Mão em pinça **não** toca cordas; nada é tocado enquanto há uma corda sendo esticada.
+- Mão em pinça **não** toca cordas. Uma mão pode segurar a ponta de uma corda enquanto a outra toca (inclusive a mesma corda).
 - Textos de UI em **português (pt-BR)**.
 
 ## Parâmetros de calibração
@@ -57,14 +58,22 @@ Ordem das seções no `<script type="module">`:
 |---|---|---|
 | Entrar em pinça | `st.pinch` no loop | `dist(4,8) < size * .28` |
 | Sair da pinça (histerese) | idem | `dist(4,8) < size * .45` |
-| Comprimento mínimo da corda | bloco "esticar / fixar" | `50 * dpr` |
+| Raio para agarrar ponta | `grabR` | `max(40 * dpr, size * .6)` |
+| Comprimento mínimo da corda | blocos "agarrar" e "esticar" | `50 * dpr` (abaixo disso, apaga/não cria) |
 | Máximo de cordas | idem | 30 (remove a mais antiga) |
 | Cooldown entre toques na mesma corda | bloco "tocar" | 140 ms |
-| Velocidade → volume | `vel = speed / (40 * dpr)` | clamp 0..1 |
+| Velocidade → intensidade | `vel = px * (33/dt) / (40 * dpr)` | clamp 0..1 |
+| Pitch bend pela força | `synthVoice` / `pluckVoice` | até +2 / +1 semitom, volta em ~80 ms |
+| Delay | `initAudio` | 270 ms, feedback .38, wet .35 |
 | Faixa de notas | `noteFor` | Dó2 (MIDI 36) a Dó5, pentatônica |
-| Sustain do som | `pluckBuffer` `decay` | `.996`, buffer de 2,5 s |
 | Decaimento visual da vibração | `drawString` | `exp(-age * 2.2)` |
-| Escurecimento do vídeo | loop | `rgba(0,0,0,.35)` |
+| Escurecimento do vídeo | `#shade` (CSS) | `rgba(0,0,0,.35)` |
+| Máximo de partículas / vozes | `MAX_PARTICLES` / `MAX_VOICES` | 300 / 10 |
+
+## Desempenho
+
+- O vídeo é mostrado pelo `<video>` (compositor da GPU), não com `drawImage` no canvas.
+- O gargalo restante é `detectForVideo` no thread principal (ver "detecção X ms" no HUD). Se continuar lento, próximo passo é mover o MediaPipe para um Web Worker. React não ajudaria: não há árvore de UI para reconciliar.
 
 ## Restrições de plataforma (iOS)
 
@@ -86,8 +95,7 @@ Teste real precisa de câmera: rodar em `localhost` no desktop e validar no iPho
 
 ## Ideias / próximos passos
 
-- Arrastar ou apagar uma corda existente (ex.: pinça perto de uma corda a agarra; punho fechado apaga).
-- Escolha de escala/tom e de timbre (harpa, synth, sino).
+- Escolha de escala/tom e mais timbres.
 - Tocar com qualquer ponta de dedo, não só o indicador.
 - Persistir as cordas em `localStorage`.
 - Gravar a performance (canvas `captureStream` + `MediaRecorder` com o áudio do `master`).
