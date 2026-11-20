@@ -83,11 +83,14 @@ let fpsT = performance.now(), fpsN = 0, detN = 0;
 
 // Pinça: usa a distância REAL (em metros, worldLandmarks) entre as pontas do polegar e do indicador,
 // que não engana quando os dedos só se sobrepõem na imagem (mão de lado). Entrar exige 3D e 2D perto;
-// sair basta um dos dois longe (histerese). A mudança só vale após PINCH_FRAMES leituras seguidas,
-// para uma leitura errada isolada não agarrar (nem soltar) uma corda.
-const PINCH_IN_M = .045, PINCH_OUT_M = .065, PINCH_IN_2D = .35, PINCH_OUT_2D = .5, PINCH_FRAMES = 2;
+// sair basta um dos dois longe (histerese). A mudança só vale após algumas leituras seguidas
+// (entrar 2, sair 3: soltar sem querer no meio de um arrasto é pior que demorar a soltar).
+const PINCH_IN_M = .05, PINCH_OUT_M = .075, PINCH_IN_2D = .38, PINCH_OUT_2D = .55;
+const PINCH_FRAMES_IN = 2, PINCH_FRAMES_OUT = 3;
+const GRAB_WINDOW = 300;    // ms após fechar a pinça em que ela ainda pode agarrar uma ponta que encostar
+const LOST_GRACE = 300;     // ms que a mão pode sumir do rastreamento sem soltar a corda que segura
 const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-function updatePinch(st, pts, size, world) {
+function updatePinch(st, pts, size, world, now) {
   const r2 = dist(pts[4], pts[8]) / (size || 1);              // 2D relativo ao tamanho da mão
   const m = world ? dist3(world[4], world[8]) : null;         // 3D em metros (se disponível)
   st.cm = m === null ? null : m * 100;
@@ -95,7 +98,10 @@ function updatePinch(st, pts, size, world) {
     ? !(r2 > PINCH_OUT_2D || (m !== null && m > PINCH_OUT_M))
     : r2 < PINCH_IN_2D && (m === null || m < PINCH_IN_M);
   if (raw === st.pinch) { st.flip = 0; return; }
-  if (++st.flip >= PINCH_FRAMES) { st.pinch = raw; st.flip = 0; }
+  if (++st.flip >= (raw ? PINCH_FRAMES_IN : PINCH_FRAMES_OUT)) {
+    st.pinch = raw; st.flip = 0;
+    if (raw) st.pinchT = now;
+  }
 }
 
 function loop(now) {
@@ -129,24 +135,30 @@ function loop(now) {
   const hands = (result?.landmarks || []).map((h, i) => {
     const pts = h.map(l => toScreen(l, b));
     const id = result.handedness?.[i]?.[0]?.categoryName || 'h' + i;
-    const st = hand[id] ||= {pinch: false, wasPinch: false, grab: null, prev: null, prevT: 0, trail: [], flip: 0, cm: 0};
+    const st = hand[id] ||= {pinch: false, wasPinch: false, grab: null, prev: null, prevT: 0, trail: [], flip: 0, cm: 0,
+      pinchT: 0, lostT: 0};
     const size = dist(pts[0], pts[9]);
-    if (fresh) updatePinch(st, pts, size, result.worldLandmarks?.[i]);
-    st.pinchPt = mid(pts[4], pts[8]); st.size = size;
+    if (fresh) updatePinch(st, pts, size, result.worldLandmarks?.[i], now);
+    st.pinchPt = mid(pts[4], pts[8]); st.size = size; st.lostT = 0;
     return {id, pts, st};
   });
+  // mão sumiu: para de tocar/rastro na hora, mas só larga pinça/corda se continuar sumida por LOST_GRACE
   for (const id in hand) if (!hands.some(h => h.id === id)) {
-    const st = hand[id]; st.pinch = st.wasPinch = false; st.grab = null; st.prev = null; st.trail.length = 0; st.flip = 0;
+    const st = hand[id]; st.prev = null; st.trail.length = 0; st.flip = 0;
+    st.lostT ||= now;
+    if (now - st.lostT > LOST_GRACE) { st.pinch = st.wasPinch = false; st.grab = null; }
   }
 
   ctx.globalCompositeOperation = 'lighter';
   ctx.lineCap = ctx.lineJoin = 'round';
 
-  // 1) agarrar / mover / soltar a ponta de uma corda (pinça que começa em cima da ponta)
+  // 1) agarrar / mover / soltar a ponta de uma corda (pinça que fecha em cima da ponta, ou que
+  //    encosta nela até GRAB_WINDOW ms depois de fechar; não vale durante o esticar de corda nova)
   for (const h of hands) {
     const st = h.st;
     if (st.grab && !strings.includes(st.grab.s)) st.grab = null;  // apagada por Desfazer/Limpar
-    if (st.pinch && !st.wasPinch) st.grab = nearestEnd(st.pinchPt, grabR(st), hands);
+    if (st.pinch && !st.grab && !stretch && now - st.pinchT < GRAB_WINDOW)
+      st.grab = nearestEnd(st.pinchPt, grabR(st), hands);
     if (!st.pinch && st.grab) {
       const s = st.grab.s, held = hands.some(o => o !== h && o.st.grab && o.st.grab.s === s);
       if (!held && strLen(s) < 50 * dpr) {                       // encolheu demais: apaga
@@ -163,6 +175,7 @@ function loop(now) {
   const free = hands.filter(h => h.st.pinch && !h.st.grab);
   if (free.length === 2) {
     stretch = {a: free[0].st.pinchPt, b: free[1].st.pinchPt};
+    for (const h of free) h.st.pinchT = -1e9;   // quem está esticando não agarra a ponta da corda recém-criada
   } else if (stretch) {
     const len = dist(stretch.a, stretch.b);
     if (len > 50 * dpr) {

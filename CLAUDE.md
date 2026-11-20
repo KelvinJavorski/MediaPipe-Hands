@@ -45,7 +45,7 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 1. **detecção**: com worker, manda `createImageBitmap(video)` só quando o worker terminou o anterior (sem fila) e marca `fresh` quando chega resultado; sem worker, chama `detectForVideo` direto quando `video.currentTime` muda. Mede ms de detecção e detecções/s para o HUD;
 2. `clearRect` no canvas (o vídeo é exibido pelo próprio `<video>` + `#shade` por CSS, não redesenhado);
 3. atualiza estado de cada mão (identidade estável por `handedness` Left/Right);
-4. **agarrar**: pinça que *começa* perto de uma ponta (`grabR`) agarra essa ponta e a move; ao soltar, se ficou < 50px, apaga a corda;
+4. **agarrar**: pinça que fecha perto de uma ponta (`grabR`), ou encosta nela até `GRAB_WINDOW` depois de fechar, agarra essa ponta e a move; ao soltar, se ficou < 50px, apaga a corda. Mão que sumiu do rastreamento só larga a corda depois de `LOST_GRACE`;
 5. **esticar/fixar**: duas pinças livres (sem `grab`) → `stretch`; quando uma solta → vira corda fixa (mínimo 50px);
 6. **tocar** (só em frame `fresh`): segmento anterior → atual do indicador de mão sem pinça cruzando uma corda, com cooldown; velocidade normalizada por tempo;
 7. desenha cordas, pontas agarradas/agarráveis, corda em esticamento, rastro, esqueleto, partículas;
@@ -64,9 +64,11 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 
 | O quê | Onde | Valor atual |
 |---|---|---|
-| Entrar em pinça | `updatePinch` em `main.js` | 3D (`worldLandmarks`, metros) `< PINCH_IN_M` 4,5 cm **e** 2D `< size * .35` (3 cm era apertado demais no iPhone) |
-| Sair da pinça (histerese) | idem | 3D `> PINCH_OUT_M` 6,5 cm **ou** 2D `> size * .5` |
-| Confirmação da pinça | `PINCH_FRAMES` | 2 leituras seguidas para entrar ou sair (uma leitura errada isolada é ignorada) |
+| Entrar em pinça | `updatePinch` em `main.js` | 3D (`worldLandmarks`, metros) `< PINCH_IN_M` 5 cm **e** 2D `< size * .38` |
+| Sair da pinça (histerese) | idem | 3D `> PINCH_OUT_M` 7,5 cm **ou** 2D `> size * .55` |
+| Confirmação da pinça | `PINCH_FRAMES_IN` / `PINCH_FRAMES_OUT` | 2 leituras seguidas para entrar, 3 para sair |
+| Janela para agarrar | `GRAB_WINDOW` | 300 ms após fechar a pinça ela ainda agarra uma ponta que encostar (não vale para quem está esticando corda nova) |
+| Mão sumida sem soltar | `LOST_GRACE` | 300 ms: se o rastreamento perde a mão por menos que isso, a corda segue presa |
 | Raio para agarrar ponta | `grabR` | `max(40 * dpr, size * .6)` |
 | Comprimento mínimo da corda | blocos "agarrar" e "esticar" | `50 * dpr` (abaixo disso, apaga/não cria) |
 | Máximo de cordas | idem | 30 (remove a mais antiga) |
