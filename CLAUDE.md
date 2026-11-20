@@ -28,11 +28,12 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 Ordem das seções no `<script type="module">`:
 
 1. **Estado global**: `opt` (toggles, inclusive `synth`), `strings[]` (cordas fixas), `particles[]`, `hand{}` (estado por mão: pinça, `grab`, posição anterior, rastro), `stretch` (corda sendo esticada).
-2. **Áudio**: `initAudio()` cria o `AudioContext` (precisa ser chamado dentro do clique do botão Iniciar, exigência do iOS) e a cadeia `master → delay com realimentação filtrada → compressor`. Dois timbres (botão "Timbre"): `synthVoice` (2 serras desafinadas + sub quadrada, lowpass ressonante com envelope) e `pluckVoice` (Karplus-Strong via `pluckBuffer`, cacheado). `playString(s, vel, pan)`: a velocidade do dedo controla volume, abertura do filtro e um *pitch bend* inicial que volta à nota (efeito de corda esticada). Vozes ativas ficam em `voices[]` (máx. 10); `retune(s)` faz as vozes de uma corda deslizarem para a nova nota quando o comprimento muda.
+2. **Áudio**: `initAudio()` cria o `AudioContext` (precisa ser chamado dentro do clique do botão Iniciar, exigência do iOS) e a cadeia `master → (delay de colcheia pontuada + reverb por convolução com IR gerada) → duck → compressor`; a bateria vai por `drums → compressor`. Três timbres (botão "Timbre", `opt.timbre` indexa `TIMBRES`): `synthVoice` (2 serras desafinadas + sub quadrada, lowpass ressonante), `bellVoice` (FM, razão 3,5) e `pluckVoice` (Karplus-Strong via `pluckBuffer`). `playString(s, vel, pan)`: a velocidade do dedo controla volume, brilho e um *pitch bend* inicial que volta à nota (corda esticada). Vozes ativas em `voices[]` (máx. 10); `retune(s)` faz as vozes de uma corda deslizarem para a nova nota.
+   - **Batida** (botão "Batida", `setBeat`): sequenciador de 16 passos a `BPM` 112, padrões em `PAT` (bumbo, palma, chimbal, tique, baixo em Dó pentatônico). `scheduleBeat()` roda em `setInterval` de 25 ms e agenda ~120 ms à frente no relógio do áudio (não depende do `requestAnimationFrame`). Cada bumbo faz *sidechain* no `duck` (cordas "respiram") e entra em `kickTimes` para o pulso visual (`pulse` no loop). Desligar "Som" desliga a batida.
 3. **Nota**: `noteFor(lenPx)` → `{f, name, hue}`. Comprimento relativo à diagonal da tela, mapeado em log (física de corda: f ∝ 1/L) para 3 oitavas (Dó2 a Dó5), quantizado na pentatônica maior (`PENTA`).
 4. **MediaPipe + câmera**: `loadModel()` tenta delegate GPU e cai para CPU. `openCamera(deviceId?)` abre a câmera em 640×480 (o modelo reduz para ~224 px de qualquer forma), detecta `facingMode` para decidir espelhamento (classe `.mirror` no `<video>`), lista dispositivos para o botão "Trocar câmera".
 5. **Geometria**: `frameBox()` reproduz o "object-fit: cover" do `<video>`; `toScreen()` converte landmark normalizado → pixel do canvas (com espelho). `crossAt()` = interseção de segmentos, retorna a posição 0..1 ao longo da corda. `endPt`, `strLen`, `nearestEnd` (ponta mais próxima não agarrada), `moveEnd` (move a ponta e recalcula a nota).
-6. **Desenho**: `glowLine()` (3 traços sobrepostos com `globalCompositeOperation='lighter'` em vez de `shadowBlur`, que é lento no iOS), `jagged()` (raio por deslocamento de ponto médio), `drawString()` (ao ser tocada começa em V no ponto do toque, na direção do dedo, e vira onda `sin(πt)` decaindo; parada = só 2 pontos), `spawn()` partículas.
+6. **Desenho**: `glowLine()` (3 traços sobrepostos com `globalCompositeOperation='lighter'` em vez de `shadowBlur`, que é lento no iOS), `jagged()` (raio por deslocamento de ponto médio, usado na corda sendo esticada), `orb()` (sprite de gradiente radial pré-renderizado e cacheado por matiz em `glowSprite`, para as pontas brilhantes), `bolt()` (raio que segue a curva da corda, sorteado de novo a cada frame, com ponto do meio extra para aspecto fractal), `drawString()` (halo + núcleo + 1–2 raios + orbes; ao ser tocada começa em V no ponto do toque, na direção do dedo, e vira onda `sin(πt)` decaindo; a amplitude abre os raios), `spawn()` partículas.
 7. **`loop()`** por frame:
    1. detecta mãos só quando `video.currentTime` muda (`fresh`); mede o tempo da detecção para o HUD;
    2. `clearRect` no canvas (o vídeo é exibido pelo próprio `<video>` + `#shade` por CSS, não redesenhado);
@@ -64,7 +65,9 @@ Ordem das seções no `<script type="module">`:
 | Cooldown entre toques na mesma corda | bloco "tocar" | 140 ms |
 | Velocidade → intensidade | `vel = px * (33/dt) / (40 * dpr)` | clamp 0..1 |
 | Pitch bend pela força | `synthVoice` / `pluckVoice` | até +2 / +1 semitom, volta em ~80 ms |
-| Delay | `initAudio` | 270 ms, feedback .38, wet .35 |
+| Delay | `initAudio` | `BEAT * .75` (colcheia pontuada), feedback .38, wet .3 |
+| Reverb | `initAudio` | IR de 2,4 s, wet .28 |
+| Tempo / sidechain | `BPM`, `kick()` | 112 BPM; cordas caem para 50% no bumbo |
 | Faixa de notas | `noteFor` | Dó2 (MIDI 36) a Dó5, pentatônica |
 | Decaimento visual da vibração | `drawString` | `exp(-age * 2.2)` |
 | Escurecimento do vídeo | `#shade` (CSS) | `rgba(0,0,0,.35)` |
@@ -82,6 +85,10 @@ Ordem das seções no `<script type="module">`:
 - **Chave de silencioso ligada corta o Web Audio** no iPhone. Avisar o usuário.
 - Evitar `shadowBlur` e filtros de canvas (performance). Preferir traços sobrepostos com `lighter`.
 - Delegate GPU do MediaPipe pode falhar em iOS antigo; o fallback CPU já existe.
+
+## Versão
+
+`const VERSION` no topo do script aparece na tela inicial (`#ver`) e no HUD. **Aumentar a cada mudança publicada** (v4, v5, …) para o usuário confirmar no iPhone que o Pages já serve a versão nova.
 
 ## Testes
 
