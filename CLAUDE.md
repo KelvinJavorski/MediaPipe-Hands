@@ -64,8 +64,8 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 
 | O quê | Onde | Valor atual |
 |---|---|---|
-| Entrar em pinça | `updatePinch` em `main.js` | 3D (`worldLandmarks`, metros) `< PINCH_IN_M` 3 cm **e** 2D `< size * .35` |
-| Sair da pinça (histerese) | idem | 3D `> PINCH_OUT_M` 5 cm **ou** 2D `> size * .5` |
+| Entrar em pinça | `updatePinch` em `main.js` | 3D (`worldLandmarks`, metros) `< PINCH_IN_M` 4,5 cm **e** 2D `< size * .35` (3 cm era apertado demais no iPhone) |
+| Sair da pinça (histerese) | idem | 3D `> PINCH_OUT_M` 6,5 cm **ou** 2D `> size * .5` |
 | Confirmação da pinça | `PINCH_FRAMES` | 2 leituras seguidas para entrar ou sair (uma leitura errada isolada é ignorada) |
 | Raio para agarrar ponta | `grabR` | `max(40 * dpr, size * .6)` |
 | Comprimento mínimo da corda | blocos "agarrar" e "esticar" | `50 * dpr` (abaixo disso, apaga/não cria) |

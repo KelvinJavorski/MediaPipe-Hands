@@ -85,7 +85,7 @@ let fpsT = performance.now(), fpsN = 0, detN = 0;
 // que não engana quando os dedos só se sobrepõem na imagem (mão de lado). Entrar exige 3D e 2D perto;
 // sair basta um dos dois longe (histerese). A mudança só vale após PINCH_FRAMES leituras seguidas,
 // para uma leitura errada isolada não agarrar (nem soltar) uma corda.
-const PINCH_IN_M = .03, PINCH_OUT_M = .05, PINCH_IN_2D = .35, PINCH_OUT_2D = .5, PINCH_FRAMES = 2;
+const PINCH_IN_M = .045, PINCH_OUT_M = .065, PINCH_IN_2D = .35, PINCH_OUT_2D = .5, PINCH_FRAMES = 2;
 const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 function updatePinch(st, pts, size, world) {
   const r2 = dist(pts[4], pts[8]) / (size || 1);              // 2D relativo ao tamanho da mão
