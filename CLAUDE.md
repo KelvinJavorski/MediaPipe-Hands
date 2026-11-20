@@ -76,7 +76,7 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 | Velocidade → intensidade | `vel = px * (33/dt) / (40 * dpr)` | clamp 0..1 |
 | Pitch bend pela força | `synthVoice` / `pluckVoice` | até +2 / +1 semitom, volta em ~80 ms |
 | Delay | `initAudio` | `BEAT * .75` (colcheia pontuada), feedback .38, wet .3 |
-| Reverb | `initAudio` | IR de 2,4 s, wet .28 |
+| Reverb | `initAudio` | IR de 1,6 s, wet .3 |
 | Tempo / sidechain | `STYLES` em `beat.js` | House 112 / Rezz 100 / Techno 126 BPM; cordas caem para 50% / 35% / 45% no bumbo |
 | Faixa de notas | `noteFor` | Dó2 (MIDI 36) a Dó5, pentatônica maior ou menor (definida pelo estilo da batida) |
 | Decaimento visual da vibração | `drawString` | `exp(-age * 2.2)` |
@@ -88,6 +88,10 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 - O vídeo é mostrado pelo `<video>` (compositor da GPU), não com `drawImage` no canvas.
 - A detecção roda num Web Worker com GPU quando possível (`worker GPU` no HUD): o desenho segue a 60 fps e as mãos atualizam no ritmo que o aparelho consegue. GPU em worker exige OffscreenCanvas com WebGL2 (Safari 17+); sem isso, cai para o thread principal (`principal GPU|CPU`), onde cada detecção trava o desenho.
 - A primeira detecção na GPU leva ~2 s (compilação de shaders); depois, poucos ms no desktop.
+- No celular (`pointer: coarse`) o desenho é limitado a ~30 fps (`FRAME_MIN_MS`), mas todo frame com leitura nova das mãos é processado na hora. O pulso da batida só clareia as cores das cordas; largura, raios extras e partículas dependem só do toque (antes o pulso dobrava o custo do desenho a cada bumbo).
+- A imagem mandada ao worker é reduzida para `DET_W` = 320 px de largura (o modelo usa ~224 px; copiar para a GPU no Safari é caro). Se a detecção de mãos longe piorar, aumentar `DET_W`.
+- Reverb com IR de 1,6 s; saturação do bumbo e do baixo reese sem oversample.
+- HUD: `mãos N/s (pior X ms)` = leituras por segundo e o maior intervalo sem leitura no último segundo (mostra travadas).
 - Medido no iPhone (v6): desenho 61 fps, detecção 62 ms na GPU do worker (~13 leituras/s, ~9/s tocando, porque o desenho disputa a GPU). Por isso o worker compara com a CPU e escolhe sozinho. No desktop a GPU vence com folga (4 ms x 21 ms).
 - React não ajudaria: não há árvore de UI para reconciliar.
 

@@ -80,6 +80,11 @@ $('#bCam').onclick = async () => {
 /* ---------- lógica por frame ---------- */
 const grabR = st => Math.max(40 * dpr, st.size * .6);   // raio para agarrar a ponta de uma corda
 let fpsT = performance.now(), fpsN = 0, detN = 0;
+// No celular, desenhar a 60 fps quase não acrescenta (as mãos atualizam ~13x/s) e disputa a GPU
+// com a detecção: desenha no máximo a ~30 fps, mas sempre que chega leitura nova das mãos.
+const FRAME_MIN_MS = matchMedia('(pointer: coarse)').matches ? 30 : 0;
+const DET_W = 320;          // largura da imagem enviada ao worker de detecção
+let lastDraw = 0, lastDet = 0, gapMax = 0;   // gapMax = maior intervalo sem leitura das mãos no último segundo (HUD)
 
 // Pinça: usa a distância REAL (em metros, worldLandmarks) entre as pontas do polegar e do indicador,
 // que não engana quando os dedos só se sobrepõem na imagem (mão de lado). Entrar exige 3D e 2D perto;
@@ -113,7 +118,12 @@ function loop(now) {
     if (busy && now - busyT > 1000) busy = false;              // resposta perdida: não trava para sempre
     if (!busy && video.currentTime !== lastVT) {
       lastVT = video.currentTime; busy = true; busyT = now;
-      createImageBitmap(video)
+      // imagem reduzida (DET_W px de largura): o modelo trabalha em ~224 px de qualquer forma, e no Safari
+      // copiar a imagem para a GPU é caro. As coordenadas são normalizadas, então nada muda no mapeamento.
+      const sc = Math.min(1, DET_W / (video.videoWidth || DET_W));
+      createImageBitmap(video, {resizeWidth: Math.round(video.videoWidth * sc), resizeHeight: Math.round(video.videoHeight * sc),
+        resizeQuality: 'low'})
+        .catch(() => createImageBitmap(video))                    // navegador sem suporte a resize
         .then(bitmap => worker.postMessage({bitmap, t: performance.now()}, [bitmap]))
         .catch(() => { busy = false; });
     }
@@ -125,7 +135,9 @@ function loop(now) {
     detMs = detMs * .9 + (performance.now() - t0) * .1;
     fresh = true;
   }
-  if (fresh) detN++;
+  if (fresh) { detN++; gapMax = Math.max(gapMax, now - lastDet); lastDet = now; }
+  if (!fresh && now - lastDraw < FRAME_MIN_MS) return;
+  lastDraw = now;
   const b = frameBox();
   ctx.globalCompositeOperation = 'source-over';
   ctx.clearRect(0, 0, W, H);
@@ -240,8 +252,9 @@ function loop(now) {
   fpsN++;
   if (now - fpsT > 1000) {
     const cms = hands.map(h => h.st.cm === null ? '?' : h.st.cm.toFixed(1)).join('/');
-    $('#hud').textContent = `${VERSION} · ${fpsN} fps · mãos ${detN}/s · detecção ${detMs.toFixed(0)} ms (${mode})` +
-      (cms ? ` · pinça ${cms} cm` : '') + ` · ${strings.length} corda(s)`;
-    fpsN = 0; detN = 0; fpsT = now;
+    const worst = Math.max(gapMax, now - lastDet);               // inclui o caso de ter travado de vez
+    $('#hud').textContent = `${VERSION} · ${fpsN} fps · mãos ${detN}/s (pior ${worst.toFixed(0)} ms) · ` +
+      `detecção ${detMs.toFixed(0)} ms (${mode})` + (cms ? ` · pinça ${cms} cm` : '') + ` · ${strings.length} corda(s)`;
+    fpsN = 0; detN = 0; gapMax = 0; fpsT = now;
   }
 }

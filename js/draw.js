@@ -101,12 +101,14 @@ export function drawString(s, now, pulse) {
     const off = osc * (tri * (1 - w) + Math.sin(Math.PI * t) * w);
     pts.push({x: a.x + (b.x - a.x) * t + nx * off, y: a.y + (b.y - a.y) * t + ny * off});
   }
-  const bright = Math.max(Math.min(1, amp / (12 * dpr)), pulse * .6);
+  // bright = só o toque (controla largura, raios extras e partículas, que custam caro);
+  // o pulso da batida só clareia as cores (custo zero), senão todas as cordas pesam a cada bumbo
+  const bright = Math.min(1, amp / (12 * dpr)), glow = Math.max(bright, pulse * .6);
   const hue = s.hue;
   // halo suave + núcleo fino
-  strokePts(pts, `hsla(${hue},100%,55%,${.14 + .16 * bright})`, (12 + 10 * bright) * dpr);
-  strokePts(pts, `hsla(${hue},100%,65%,${.3 + .3 * bright})`, 5 * dpr);
-  strokePts(pts, `hsla(${hue},100%,80%,${.6 + .4 * bright})`, 1.8 * dpr);
+  strokePts(pts, `hsla(${hue},100%,55%,${.14 + .16 * glow})`, (12 + 10 * bright) * dpr);
+  strokePts(pts, `hsla(${hue},100%,65%,${.3 + .3 * glow})`, 5 * dpr);
+  strokePts(pts, `hsla(${hue},100%,80%,${.6 + .4 * glow})`, 1.8 * dpr);
   // raios: parada crepita de leve; tocada, os raios abrem e ficam mais brancos
   const zap = (2.5 + 3 * Math.random()) * dpr + amp * .6;
   strokePts(bolt(pts, nx, ny, zap), `hsla(${hue},100%,${80 + 18 * bright}%,${.6 + .4 * bright})`, (1.1 + .7 * bright) * dpr);

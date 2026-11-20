@@ -37,7 +37,7 @@ function kick(t, heavy) {
   o.frequency.setValueAtTime(heavy ? 120 : 150, t); o.frequency.exponentialRampToValueAtTime(heavy ? 36 : 42, t + .12);
   g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(.001, t + (heavy ? .6 : .4));
   o.connect(g);
-  if (heavy) { const sh = shaper(); g.connect(sh); sh.connect(drums); } else g.connect(drums);
+  if (heavy) { const sh = shaper('none'); g.connect(sh); sh.connect(drums); } else g.connect(drums);  // grave: sem aliasing audível
   o.start(t); o.stop(t + .65);
   // sidechain: as cordas "respiram" com o bumbo
   duck.gain.setValueAtTime(1, t); duck.gain.linearRampToValueAtTime(style.duck, t + .01); duck.gain.setTargetAtTime(1, t + .03, .09);
@@ -47,7 +47,7 @@ function bass(t, midi) {
   const f = 440 * 2 ** ((midi - 69) / 12), lp = ac.createBiquadFilter(), g = ac.createGain();
   if (style.bassType === 'reese') {
     // dois serras desafinadas + saturação, filtro abrindo e fechando: o "rosnado" dark
-    const o1 = ac.createOscillator(), o2 = ac.createOscillator(), sh = shaper(), len = BEAT * 1.4;
+    const o1 = ac.createOscillator(), o2 = ac.createOscillator(), sh = shaper('none'), len = BEAT * 1.4;
     o1.type = o2.type = 'sawtooth'; o1.frequency.value = o2.frequency.value = f; o1.detune.value = -20; o2.detune.value = 20;
     lp.type = 'lowpass'; lp.Q.value = 6;
     lp.frequency.setValueAtTime(180, t); lp.frequency.linearRampToValueAtTime(1100, t + len * .45); lp.frequency.linearRampToValueAtTime(160, t + len);

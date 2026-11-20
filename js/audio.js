@@ -28,10 +28,10 @@ export function initAudio() {
   distCurve = new Float32Array(1024);
   for (let i = 0; i < 1024; i++) { const x = i / 511.5 - 1; distCurve[i] = Math.tanh(x * 3.5) / Math.tanh(3.5); }
   // reverb: resposta ao impulso gerada (ruído com decaimento exponencial), sem arquivos
-  const rv = ac.createConvolver(), rvWet = ac.createGain(), sr = ac.sampleRate, n = Math.round(sr * 2.4);
+  const rv = ac.createConvolver(), rvWet = ac.createGain(), sr = ac.sampleRate, n = Math.round(sr * 1.6);   // IR curta: convolução custa CPU de áudio a cada amostra
   const ir = ac.createBuffer(2, n, sr);
   for (let c = 0; c < 2; c++) { const d = ir.getChannelData(c); for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n) ** 3; }
-  rv.buffer = ir; rvWet.gain.value = .28;
+  rv.buffer = ir; rvWet.gain.value = .3;
   master.connect(rv); rv.connect(rvWet); rvWet.connect(duck);
   noiseBuf = ac.createBuffer(1, sr, sr);
   { const d = noiseBuf.getChannelData(0); for (let i = 0; i < sr; i++) d[i] = Math.random() * 2 - 1; }
@@ -46,8 +46,8 @@ export function setTempo(bpm) {
 }
 
 export const stopAt = (o, t) => { try { o.stop(t); } catch (e) {} };
-export function shaper() {
-  const sh = ac.createWaveShaper(); sh.curve = distCurve; sh.oversample = '2x'; return sh;
+export function shaper(oversample = '2x') {
+  const sh = ac.createWaveShaper(); sh.curve = distCurve; sh.oversample = oversample; return sh;
 }
 
 // reese: 2 serras bem desafinadas + sub, saturação, lowpass "respirando" com LFO (dark, estilo Rezz).
