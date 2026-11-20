@@ -12,8 +12,33 @@ export async function loadModel() {
   const base = {modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"};
   const cfg = d => ({baseOptions: {...base, delegate: d}, runningMode: "VIDEO", numHands: 2,
     minHandDetectionConfidence: .5, minHandPresenceConfidence: .5, minTrackingConfidence: .5});
-  try { return await HandLandmarker.createFromOptions(files, cfg("GPU")); }
-  catch (e) { console.warn('GPU falhou, usando CPU', e); return await HandLandmarker.createFromOptions(files, cfg("CPU")); }
+  try { const lm = await HandLandmarker.createFromOptions(files, cfg("GPU")); delegate = 'GPU'; return lm; }
+  catch (e) { console.warn('GPU falhou, usando CPU', e); delegate = 'CPU'; return await HandLandmarker.createFromOptions(files, cfg("CPU")); }
+}
+export let delegate = '';
+
+// Tenta rodar a detecção num Web Worker (js/detector.js). Só aceita se o worker conseguiu GPU:
+// detecção em CPU no worker costuma ser mais lenta que GPU no thread principal.
+// Retorna o Worker pronto, ou null (aí use loadModel() no thread principal).
+export async function startWorker() {
+  if (!window.Worker || !window.createImageBitmap) return null;
+  let w;
+  try {
+    // mesma versão (?v=N) do módulo atual, para o Safari não usar um worker velho do cache
+    w = new Worker(new URL('./detector.js' + new URL(import.meta.url).search, import.meta.url), {type: 'module'});
+    const info = await new Promise((res, rej) => {
+      w.onmessage = e => e.data.type === 'ready' ? res(e.data) : rej(new Error(e.data.message));
+      w.onerror = e => rej(new Error(e.message || 'erro no worker'));
+      setTimeout(() => rej(new Error('worker demorou demais')), 25000);
+    });
+    if (info.delegate !== 'GPU') throw new Error('worker sem GPU');
+    delegate = 'GPU';
+    return w;
+  } catch (e) {
+    console.warn('Worker de detecção indisponível, usando thread principal:', e);
+    w?.terminate();
+    return null;
+  }
 }
 
 export async function openCamera(deviceId) {

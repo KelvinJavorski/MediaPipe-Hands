@@ -36,19 +36,20 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 | `js/audio.js` | `initAudio()` (precisa estar dentro do clique em Iniciar, exigência do iOS) e a cadeia `master → (delay de colcheia pontuada + reverb com IR gerada) → duck → compressor`. `BPM`/`BEAT` variam com `setTempo()`. `shaper()` = saturação tanh (`distCurve`). Timbres em `VOICES`: `synthVoice` (2 serras + sub, lowpass ressonante), `reeseVoice` (serras bem desafinadas + sub, saturação, lowpass com LFO: dark/Rezz), `acidVoice` (serra, filtro muito ressonante varrendo, saturação: 303), `bellVoice` (FM, razão 3,5), `pluckVoice` (Karplus-Strong). `playString(s, vel, pan)`: força do dedo → volume, brilho e *pitch bend* que volta à nota. `retune(s)` desliza as vozes de uma corda quando a nota muda. |
 | `js/beat.js` | Sequenciador de 16 passos com 3 estilos em `STYLES` (cada um: `bpm`, `scale` das cordas, `bassType` `pluck`/`reese`, profundidade do sidechain `duck`, padrões `kick`/`clap`/`hat` (`o` = chimbal aberto)/`tick`/`bass`): **House** 112 maior, **Rezz** 100 menor meio-tempo com baixo reese e bumbo saturado, **Techno** 126 menor. `scheduleBeat()` roda em `setInterval` de 25 ms e agenda ~120 ms à frente no relógio do áudio. `setBeat(idx)` (−1 desliga; tempo e escala ficam no último estilo), `beatPulse()` (0..1 para as cordas piscarem). |
 | `js/strings.js` | `strings[]`, `noteFor(lenPx)` (comprimento relativo à diagonal, log, 3 oitavas Dó2–Dó5, pentatônica de Dó maior ou menor), `setScale(nome)` (reafina as cordas existentes), `endPt`, `strLen`, `nearestEnd`, `moveEnd`. |
-| `js/camera.js` | `loadModel()` (GPU com fallback CPU), `openCamera()` (640×480), `nextCamera()`, `toggleMirror()`, `frameBox()`/`toScreen()` (mapeamento "object-fit: cover" com espelho). |
+| `js/camera.js` | `startWorker()` (sobe `js/detector.js` como Web Worker e só aceita se ele conseguiu GPU; senão retorna null), `loadModel()` (thread principal, GPU com fallback CPU), `delegate`, `openCamera()` (640×480), `nextCamera()`, `toggleMirror()`, `frameBox()`/`toScreen()` (mapeamento "object-fit: cover" com espelho). |
+| `js/detector.js` | Web Worker (módulo) que roda o HandLandmarker. Recebe `{bitmap, t}` (ImageBitmap transferido) e devolve `{type: 'result', landmarks, handedness, ms}`. O MediaPipe usa `importScripts` para o loader do WASM, que não existe em worker de módulo: o worker baixa o loader antes e substitui `importScripts` por um `eval` global. Não está no import map: é carregado com o mesmo `?v=` do `camera.js`. |
 | `js/draw.js` | Primitivas (`strokePts`, `glowLine`, `jagged`, `orb` com sprite de gradiente cacheado por matiz, `bolt` raio fractal, `ring`, `label`, `dot`), partículas, `drawString` (halo + núcleo + raios + orbes; ao tocar começa em V no ponto do toque e vira onda `sin(πt)` decaindo), `drawStretch`, `drawTrail`, `drawSkeleton`. |
 | `js/main.js` | Botões e `loop()` por frame. |
 
 `loop()` por frame:
-1. detecta mãos só quando `video.currentTime` muda (`fresh`); mede o tempo da detecção para o HUD;
+1. **detecção**: com worker, manda `createImageBitmap(video)` só quando o worker terminou o anterior (sem fila) e marca `fresh` quando chega resultado; sem worker, chama `detectForVideo` direto quando `video.currentTime` muda. Mede ms de detecção e detecções/s para o HUD;
 2. `clearRect` no canvas (o vídeo é exibido pelo próprio `<video>` + `#shade` por CSS, não redesenhado);
 3. atualiza estado de cada mão (identidade estável por `handedness` Left/Right);
 4. **agarrar**: pinça que *começa* perto de uma ponta (`grabR`) agarra essa ponta e a move; ao soltar, se ficou < 50px, apaga a corda;
 5. **esticar/fixar**: duas pinças livres (sem `grab`) → `stretch`; quando uma solta → vira corda fixa (mínimo 50px);
 6. **tocar** (só em frame `fresh`): segmento anterior → atual do indicador de mão sem pinça cruzando uma corda, com cooldown; velocidade normalizada por tempo;
 7. desenha cordas, pontas agarradas/agarráveis, corda em esticamento, rastro, esqueleto, partículas;
-8. HUD: versão, fps, ms de detecção, mãos, cordas.
+8. HUD: versão, fps de desenho, detecções/s, ms de detecção e modo (`worker GPU` / `principal GPU|CPU`), cordas.
 
 ### Convenções importantes
 
@@ -82,7 +83,9 @@ A câmera exige **contexto seguro** (`https://` ou `localhost`). Abrir via `file
 ## Desempenho
 
 - O vídeo é mostrado pelo `<video>` (compositor da GPU), não com `drawImage` no canvas.
-- O gargalo restante é `detectForVideo` no thread principal (ver "detecção X ms" no HUD). Se continuar lento, próximo passo é mover o MediaPipe para um Web Worker. React não ajudaria: não há árvore de UI para reconciliar.
+- A detecção roda num Web Worker com GPU quando possível (`worker GPU` no HUD): o desenho segue a 60 fps e as mãos atualizam no ritmo que o aparelho consegue. GPU em worker exige OffscreenCanvas com WebGL2 (Safari 17+); sem isso, cai para o thread principal (`principal GPU|CPU`), onde cada detecção trava o desenho.
+- A primeira detecção na GPU leva ~2 s (compilação de shaders); depois, poucos ms no desktop.
+- React não ajudaria: não há árvore de UI para reconciliar.
 
 ## Restrições de plataforma (iOS)
 

@@ -5,12 +5,30 @@ import {dist, mid, clamp, crossAt} from './geom.js';
 import {initAudio, playString} from './audio.js';
 import {setBeat, beatPulse, STYLES} from './beat.js';
 import {strings, MAX_STRINGS, noteFor, endPt, strLen, nearestEnd, moveEnd} from './strings.js';
-import {video, mirror, loadModel, openCamera, nextCamera, toggleMirror, frameBox, toScreen} from './camera.js';
+import {video, mirror, delegate, loadModel, startWorker, openCamera, nextCamera, toggleMirror, frameBox, toScreen} from './camera.js';
 import {spawn, drawString, drawStretch, drawTrail, drawSkeleton, drawParticles, dot, ring, label} from './draw.js';
 
 const $ = s => document.querySelector(s);
 const msg = t => { $('#msg').textContent = t; };
-let landmarker, lastVT = -1, result = null;
+// Detecção: de preferência num Web Worker (o desenho não espera); senão, no thread principal.
+let worker = null, landmarker = null, mode = '';
+let lastVT = -1, result = null, busy = false, busyT = 0, gotResult = false, detMs = 0;
+function onWorkerMsg(e) {
+  if (e.data.type !== 'result') return;
+  result = e.data; gotResult = true; busy = false;
+  detMs = detMs * .9 + e.data.ms * .1;
+}
+async function initDetector() {
+  if (worker || landmarker) return;
+  worker = await startWorker();
+  if (worker) {
+    worker.onmessage = onWorkerMsg; mode = 'worker GPU';
+    worker.onerror = async e => {                                // worker quebrou no meio: volta ao thread principal
+      console.warn('worker caiu', e); worker.terminate(); worker = null; busy = false;
+      landmarker = await loadModel(); mode = 'principal ' + delegate;
+    };
+  } else { landmarker = await loadModel(); mode = 'principal ' + delegate; }
+}
 const hand = {};            // estado por mão (Left/Right): pinça, ponta agarrada, posição anterior, rastro
 let stretch = null;         // corda sendo esticada {a,b}
 
@@ -23,7 +41,7 @@ $('#start').onclick = async () => {
     $('#start').disabled = true;
     initAudio();
     msg('Carregando modelo de mãos…');
-    landmarker = landmarker || await loadModel();
+    await initDetector();
     msg('Abrindo câmera…');
     await openCamera(); lastVT = -1; showMirror();
     $('#intro').hidden = true; $('#ui').hidden = false;
@@ -59,19 +77,30 @@ $('#bCam').onclick = async () => {
 
 /* ---------- lógica por frame ---------- */
 const grabR = st => Math.max(40 * dpr, st.size * .6);   // raio para agarrar a ponta de uma corda
-let fpsT = performance.now(), fpsN = 0, detMs = 0;
+let fpsT = performance.now(), fpsN = 0, detN = 0;
 
 function loop(now) {
   requestAnimationFrame(loop);
   if (video.readyState < 2) return;
-  let fresh = false;                                             // chegou frame novo da câmera?
-  if (video.currentTime !== lastVT) {
+  let fresh = false;                                             // chegou resultado novo de detecção?
+  if (worker) {
+    // manda o frame novo da câmera só quando o worker terminou o anterior (sem fila acumulando atraso)
+    if (busy && now - busyT > 1000) busy = false;              // resposta perdida: não trava para sempre
+    if (!busy && video.currentTime !== lastVT) {
+      lastVT = video.currentTime; busy = true; busyT = now;
+      createImageBitmap(video)
+        .then(bitmap => worker.postMessage({bitmap, t: performance.now()}, [bitmap]))
+        .catch(() => { busy = false; });
+    }
+    if (gotResult) { gotResult = false; fresh = true; }
+  } else if (video.currentTime !== lastVT) {
     lastVT = video.currentTime;
     const t0 = performance.now();
     result = landmarker.detectForVideo(video, now);
     detMs = detMs * .9 + (performance.now() - t0) * .1;
     fresh = true;
   }
+  if (fresh) detN++;
   const b = frameBox();
   ctx.globalCompositeOperation = 'source-over';
   ctx.clearRect(0, 0, W, H);
@@ -178,7 +207,7 @@ function loop(now) {
 
   fpsN++;
   if (now - fpsT > 1000) {
-    $('#hud').textContent = `${VERSION} · ${fpsN} fps · detecção ${detMs.toFixed(0)} ms · ${hands.length} mão(s) · ${strings.length} corda(s)`;
-    fpsN = 0; fpsT = now;
+    $('#hud').textContent = `${VERSION} · ${fpsN} fps · mãos ${detN}/s · detecção ${detMs.toFixed(0)} ms (${mode}) · ${strings.length} corda(s)`;
+    fpsN = 0; detN = 0; fpsT = now;
   }
 }
