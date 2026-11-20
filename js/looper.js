@@ -37,12 +37,14 @@ export function loopClear() {
   events = []; hits.length = 0; loopState = 'vazio';
 }
 
-// chamado a cada toque de corda feito pela pessoa
-export function loopRecord(s, vel, pan, f, u) {
+// chamado a cada toque de corda feito pela pessoa. when = horário em que o toque soa (com a batida
+// ligada é a semicolcheia seguinte); f = nota da corda (a repetição é harmonizada com o acorde de cada volta)
+export function loopRecord(s, vel, pan, f, u, when) {
   if (!ac || events.length >= MAX_EVENTS) return;
-  if (loopState === 'gravando') events.push({o: ac.currentTime - recStart, s, vel, pan, f, u});
+  const t = when ?? ac.currentTime;
+  if (loopState === 'gravando') events.push({o: t - recStart, s, vel, pan, f, u});
   // na camada, o toque já soou agora; ele entra no loop a partir da próxima volta
-  else if (loopState === 'camada') events.push({o: (ac.currentTime - loopStart) % loopLen, s, vel, pan, f, u});
+  else if (loopState === 'camada') events.push({o: (((t - loopStart) % loopLen) + loopLen) % loopLen, s, vel, pan, f, u});
 }
 
 function tick() {

@@ -2,8 +2,8 @@
 import {VERSION, opt, TIMBRES} from './state.js';
 import {ctx, W, H, dpr} from './view.js';
 import {dist, mid, clamp, crossAt} from './geom.js';
-import {initAudio, playString, curFreq} from './audio.js';
-import {setBeat, beatPulse, STYLES} from './beat.js';
+import {ac, initAudio, playString, curFreq} from './audio.js';
+import {setBeat, beatPulse, STYLES, quantize, currentChord} from './beat.js';
 import {strings, MAX_STRINGS, noteFor, endPt, strLen, nearestEnd, nearestMid, moveEnd, bendTo, releaseBend} from './strings.js';
 import {loopState, loopPress, loopClear, loopRecord, dueLoopHits, loopProgress} from './looper.js';
 import {recSupported, isRecording, recSeconds, startRec, recFrame, stopRec, saveVideo} from './recorder.js';
@@ -110,10 +110,14 @@ $('#bSave').onclick = async () => {
   if (r !== 'cancelado') { $('#bSave').hidden = true; videoBlob = null; }
 };
 
-// toque de verdade numa corda: soa e entra no loop (se estiver gravando)
+// toque de verdade numa corda: soa e entra no loop (se estiver gravando).
+// Com a batida ligada, soa na próxima semicolcheia (no ritmo) e na nota do acorde do momento
+// (a harmonização acontece dentro de playString); o loop guarda a nota da corda, não a harmonizada,
+// para a repetição combinar com o acorde de cada volta.
 function pluck(s, vel, pan, u) {
-  playString(s, vel, pan);
-  loopRecord(s, vel, pan, curFreq(s), u);
+  const when = ac ? quantize(ac.currentTime) : undefined;
+  playString(s, vel, pan, when);
+  loopRecord(s, vel, pan, curFreq(s), u, when);
 }
 
 /* ---------- lógica por frame ---------- */
@@ -337,6 +341,7 @@ function loop(now) {
     const worst = Math.max(gapMax, now - lastDet);               // inclui o caso de ter travado de vez
     $('#hud').textContent = `${VERSION} · ${fpsN} fps · mãos ${detN}/s (pior ${worst.toFixed(0)} ms) · ` +
       `detecção ${detMs.toFixed(0)} ms (${mode})` + (cms ? ` · pinça ${cms} cm` : '') + ` · ${strings.length} corda(s)` +
+      (currentChord() ? ` · acorde ${currentChord().name}` : '') +
       (isRecording() ? ` · ● REC ${Math.floor(recSeconds() / 60)}:${String(Math.floor(recSeconds() % 60)).padStart(2, '0')}` : '');
     fpsN = 0; detN = 0; gapMax = 0; fpsT = now;
   }

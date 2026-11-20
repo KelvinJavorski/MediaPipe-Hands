@@ -21,12 +21,13 @@ export function setScale(name) {
 
 export function noteFor(lenPx) {
   const r = Math.min(1, lenPx / Math.hypot(W, H));              // 0..1 da diagonal da tela
-  // corda real: frequência ~ 1/comprimento. 3 oitavas, de Dó2 (longa) a Dó5 (curta)
-  const semis = Math.max(0, Math.min(36, Math.round(12 * Math.log2(.9 / Math.max(r, .9 / 8)))));
+  // corda real: frequência ~ 1/comprimento. 2 oitavas, de Dó3 (longa) a Dó5 (curta): acima do baixo
+  // da batida (que fica entre Sol1 e Fá#2), para não embolar com ele
+  const semis = Math.max(0, Math.min(24, Math.round(12 * Math.log2(.9 / Math.max(r, .9 / 4)))));
   let best = 0, bd = 99;
-  for (let o = 0; o <= 3; o++) for (const p of PENTA) { const s = o * 12 + p; if (s <= 36 && Math.abs(s - semis) < bd) { bd = Math.abs(s - semis); best = s; } }
-  const midi = 36 + best;                                       // 36 = Dó2
-  return {f: 440 * 2 ** ((midi - 69) / 12), name: NAMES[midi % 12] + (Math.floor(midi / 12) - 1), hue: (200 + best * 9) % 360};
+  for (let o = 0; o <= 2; o++) for (const p of PENTA) { const s = o * 12 + p; if (s <= 24 && Math.abs(s - semis) < bd) { bd = Math.abs(s - semis); best = s; } }
+  const midi = 48 + best;                                       // 48 = Dó3
+  return {f: 440 * 2 ** ((midi - 69) / 12), name: NAMES[midi % 12] + (Math.floor(midi / 12) - 1), hue: (200 + best * 13) % 360};
 }
 
 export const endPt = (s, e) => ({x: s[e + 'x'] * W, y: s[e + 'y'] * H});      // e = 'a' | 'b'

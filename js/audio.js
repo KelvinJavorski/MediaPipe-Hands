@@ -173,8 +173,16 @@ const VOICES = [synthVoice, reeseVoice, acidVoice, bellVoice, pluckVoice];
 // frequência atual da corda: nota do comprimento × bend (pinça puxando o meio da corda)
 export const curFreq = s => s.f * (s.bendMul || 1);
 
+// Harmonizador (a batida instala um quando está ligada): (freq, t) -> nota do acorde do momento.
+// Fica aqui como "gancho" para audio.js não depender de beat.js (beat.js já importa audio.js).
+let harmonizer = null;
+export function setHarmonizer(fn) { harmonizer = fn; }
+// nota de verdade que soa: a nota da corda puxada para o acorde (se houver batida) × bend
+const soundFreq = (base, mul, t) => (harmonizer ? harmonizer(base, t) : base) * mul;
+
 // toca a corda s: vel 0..1 (força do dedo), pan -1..1 (posição X).
-// when = horário no relógio do áudio (looper agenda à frente); freq = frequência fixa (nota gravada no loop).
+// when = horário no relógio do áudio (looper agenda à frente; toque no ritmo espera a semicolcheia);
+// freq = frequência fixa (nota gravada no loop; não acompanha mudanças da corda).
 export function playString(s, vel, pan, when, freq) {
   if (!opt.sound || !ac) return;
   if (ac.state !== 'running') ac.resume();
@@ -182,15 +190,19 @@ export function playString(s, vel, pan, when, freq) {
   let node = out;
   if (ac.createStereoPanner) { const p = ac.createStereoPanner(); p.pan.value = pan; out.connect(p); node = p; }
   node.connect(master);
-  const v = VOICES[opt.timbre](freq ?? curFreq(s), vel, t, out);
-  v.s = freq ? null : s;      // nota do loop não acompanha mudanças da corda
+  const f = freq ? soundFreq(freq, 1, t) : soundFreq(s.f, s.bendMul || 1, t);
+  const v = VOICES[opt.timbre](f, vel, t, out);
+  v.s = freq ? null : s;
   v.out = out; voices.push(v);
   for (let i = voices.length - 1; i >= 0; i--) if (voices[i].end < now) voices.splice(i, 1);
   while (voices.length > MAX_VOICES) { const o = voices.shift(); o.out.gain.setTargetAtTime(0, now, .015); o.kill(now); }
 }
 
 // a corda mudou de nota (comprimento ou bend): as vozes que estão soando deslizam para a nova nota
-export function retune(s) { const f = curFreq(s); for (const v of voices) if (v.s === s) v.set(f); }
+export function retune(s) {
+  const f = soundFreq(s.f, s.bendMul || 1, ac ? ac.currentTime : 0);
+  for (const v of voices) if (v.s === s) v.set(f);
+}
 
 // som final (depois do compressor) como MediaStream, para gravar vídeo com áudio
 let recDest = null;
